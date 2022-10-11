@@ -645,16 +645,16 @@ public:
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "roboat_loam");
+    ros::init(argc, argv, "roboat_loam");   //ros初始化
     
-    IMUPreintegration ImuP;
+    IMUPreintegration ImuP; //定义ImuP类
 
-    TransformFusion TF;
+    TransformFusion TF; //定义TF类
 
-    ROS_INFO("\033[1;32m----> IMU Preintegration Started.\033[0m");
+    ROS_INFO("\033[1;32m----> IMU Preintegration Started.\033[0m"); //打印消息
     
-    ros::MultiThreadedSpinner spinner(4);
-    spinner.spin();
+    ros::MultiThreadedSpinner spinner(4);   //多线程触发，开辟四个线程进行回调，提升速度
+    spinner.spin(); //程序停留等待回调函数执行
     
     return 0;
 }

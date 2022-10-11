@@ -566,10 +566,10 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
         // imu原始测量数据转换到lidar系，加速度、角速度、RPY
         sensor_msgs::Imu thisImu = imuConverter(*imu_raw);
-
+        // 注意这里有两个imu的队列，作用不相同，一个用来执行预积分和位姿的优化，一个用来更新imu状态
         // 添加当前帧imu数据到队列
-        imuQueOpt.push_back(thisImu);
-        imuQueImu.push_back(thisImu);
+        imuQueOpt.push_back(thisImu);   //执行预积分和位姿的优化
+        imuQueImu.push_back(thisImu);   //更新imu状态
 
         // 要求上一次imu因子图优化执行成功，确保更新了上一帧（激光里程计帧）的状态、偏置，预积分重新计算了
         if (doneFirstOpt == false)

@@ -7,12 +7,12 @@ Date: 2021-02-21
     对经过运动畸变校正之后的当前帧激光点云，计算每个点的曲率，进而提取角点、平面点（用曲率的大小进行判定）。
 
 订阅：
-    1、订阅当前激光帧运动畸变校正后的点云信息，来自ImageProjection。
+    1、lio_sam/deskew/cloud_info：订阅当前激光帧运动畸变校正后的点云信息，来自ImageProjection。
 
 发布：
-    1、发布当前激光帧提取特征之后的点云信息，包括的历史数据有：运动畸变校正，点云数据，初始位姿，姿态角，有效点云数据，角点点云，平面点点云等，发布给MapOptimization；
-    2、发布当前激光帧提取的角点点云，用于rviz展示；
-    3、发布当前激光帧提取的平面点点云，用于rviz展示。
+    1、lio_sam/feature/cloud_info：发布当前激光帧提取特征之后的点云信息，包括的历史数据有：运动畸变校正，点云数据，初始位姿，姿态角，有效点云数据，角点点云，平面点点云等，发布给MapOptimization；
+    2、lio_sam/feature/cloud_corner：发布当前激光帧提取的角点点云，用于rviz展示；
+    3、lio_sam/feature/cloud_surface：发布当前激光帧提取的平面点点云，用于rviz展示。
 **************************************************/  
 #include "utility.h"
 #include "lio_sam/cloud_info.h"
@@ -105,7 +105,7 @@ public:
     }
 
     /**
-     * 订阅当前激光帧运动畸变校正后的点云信息
+     * 订阅当前激光帧运动畸变校正后的点云信息（上一个节点）
      * 1、计算当前激光帧点云中每个点的曲率
      * 2、标记属于遮挡、平行两种情况的点，不做特征提取
      * 3、点云角点、平面点特征提取
@@ -115,9 +115,10 @@ public:
     */
     void laserCloudInfoHandler(const lio_sam::cloud_infoConstPtr& msgIn)
     {
-        cloudInfo = *msgIn; 
-        cloudHeader = msgIn->header; 
+        cloudInfo = *msgIn; // new cloud info 
+        cloudHeader = msgIn->header;    // new cloud header
         // 当前激光帧运动畸变校正后的有效点云
+        // 把提取出来的有效的点转成pcl的格式
         pcl::fromROSMsg(msgIn->cloud_deskewed, *extractedCloud); 
 
         // 计算当前激光帧点云中每个点的曲率
@@ -136,7 +137,7 @@ public:
     }
 
     /**
-     * 计算当前激光帧点云中每个点的曲率
+     * 计算当前激光帧点云中每个点的曲率（和aloam完全一致）
     */
     void calculateSmoothness()
     {
@@ -145,6 +146,7 @@ public:
         for (int i = 5; i < cloudSize - 5; i++)
         {
             // 用当前激光点前后5个点计算当前点的曲率，平坦位置处曲率较小，角点处曲率较大；这个方法很简单但有效
+            // 计算当前点和周围10个点的距离差
             float diffRange = cloudInfo.pointRange[i-5] + cloudInfo.pointRange[i-4]
                             + cloudInfo.pointRange[i-3] + cloudInfo.pointRange[i-2]
                             + cloudInfo.pointRange[i-1] - cloudInfo.pointRange[i] * 10
@@ -154,11 +156,12 @@ public:
 
             // 距离差值平方作为曲率
             cloudCurvature[i] = diffRange*diffRange;
-
+            // 下面两个值赋成初始值
             cloudNeighborPicked[i] = 0;
             cloudLabel[i] = 0;
             
             // 存储该点曲率值、激光点一维索引
+            // 用来进行曲率排序
             cloudSmoothness[i].value = cloudCurvature[i];
             cloudSmoothness[i].ind = i;
         }
@@ -174,17 +177,19 @@ public:
 
         for (int i = 5; i < cloudSize - 6; ++i)
         {
+            //取出两个点的距离信息
             // 当前点和下一个点的range值
             float depth1 = cloudInfo.pointRange[i];
             float depth2 = cloudInfo.pointRange[i+1];
             // 两个激光点之间的一维索引差值，如果在一条扫描线上，那么值为1；如果两个点之间有一些无效点被剔除了，可能会比1大，但不会特别大
             // 如果恰好前一个点在扫描一周的结束时刻，下一个点是另一条扫描线的起始时刻，那么值会很大
-            int columnDiff = std::abs(int(cloudInfo.pointColInd[i+1] - cloudInfo.pointColInd[i]));
+            int columnDiff = std::abs(int(cloudInfo.pointColInd[i+1] - cloudInfo.pointColInd[i]));  // 计算两个有效点之间的列id差
 
             // 两个点在同一扫描线上，且距离相差大于0.3，认为存在遮挡关系（也就是这两个点不在同一平面上，如果在同一平面上，距离相差不会太大）
             // 远处的点会被遮挡，标记一下该点以及相邻的5个点，后面不再进行特征提取
-            if (columnDiff < 10){
-                
+            if (columnDiff < 10){   // 只有比较靠近才有意义
+                // 10 pixel diff in range image
+                // 这样depth1容易呗遮挡，因此其之前的5个点设置为无效点
                 if (depth1 - depth2 > 0.3){
                     cloudNeighborPicked[i - 5] = 1;
                     cloudNeighborPicked[i - 4] = 1;
@@ -192,7 +197,7 @@ public:
                     cloudNeighborPicked[i - 2] = 1;
                     cloudNeighborPicked[i - 1] = 1;
                     cloudNeighborPicked[i] = 1;
-                }else if (depth2 - depth1 > 0.3){
+                }else if (depth2 - depth1 > 0.3){   // 这里同理
                     cloudNeighborPicked[i + 1] = 1;
                     cloudNeighborPicked[i + 2] = 1;
                     cloudNeighborPicked[i + 3] = 1;
@@ -205,7 +210,7 @@ public:
             // 用前后相邻点判断当前点所在平面是否与激光束方向平行
             float diff1 = std::abs(float(cloudInfo.pointRange[i-1] - cloudInfo.pointRange[i]));
             float diff2 = std::abs(float(cloudInfo.pointRange[i+1] - cloudInfo.pointRange[i]));
-
+            // 如果两点距离比较大，就很可能是平行的点，也很可能失去观测
             // 平行则标记一下
             if (diff1 > 0.02 * cloudInfo.pointRange[i] && diff2 > 0.02 * cloudInfo.pointRange[i])
                 cloudNeighborPicked[i] = 1;
@@ -213,11 +218,11 @@ public:
     }
 
     /**
-     * 点云角点、平面点特征提取
+     * 点云角点、平面点特征提取（没有提取地面点，和aloam一致）
      * 1、遍历扫描线，每根扫描线扫描一周的点云划分为6段，针对每段提取20个角点、不限数量的平面点，加入角点集合、平面点集合
      * 2、认为非角点的点都是平面点，加入平面点云集合，最后降采样
     */
-    void extractFeatures()
+    void extractFeatures()  // 此处未根据视频做笔记，需要注意的是并没有像aloam比较/一般的的边缘点和面点，这里直接边缘点和面点
     {
         cornerCloud->clear();
         surfaceCloud->clear();
@@ -356,6 +361,7 @@ public:
         // 清理
         freeCloudInfoMemory();
         // 发布角点、面点点云，用于rviz展示
+        // 把角点和面点发送给后端
         cloudInfo.cloud_corner  = publishCloud(&pubCornerPoints,  cornerCloud,  cloudHeader.stamp, lidarFrame);
         cloudInfo.cloud_surface = publishCloud(&pubSurfacePoints, surfaceCloud, cloudHeader.stamp, lidarFrame);
         // 发布当前激光帧点云信息，加入了角点、面点点云数据，发布给mapOptimization

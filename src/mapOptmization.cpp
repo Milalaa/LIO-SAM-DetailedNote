@@ -9,9 +9,9 @@ Date: 2021-02-21
     3、闭环检测：在历史关键帧中找距离相近，时间相隔较远的帧设为匹配帧，匹配帧周围提取局部关键帧map，同样执行scan-to-map匹配，得到位姿变换，构建闭环因子数据，加入因子图优化。
 
 订阅：
-    1、订阅当前激光帧点云信息，来自FeatureExtraction；
-    2、订阅GPS里程计；
-    3、订阅来自外部闭环检测程序提供的闭环数据，本程序没有提供，这里实际没用上。
+    1、lio_sam/feature/cloud_info：订阅当前激光帧点云信息，来自FeatureExtraction；
+    2、gpsTopic：订阅GPS里程计；
+    3、lio_loop/loop_closure_detection：订阅来自外部闭环检测程序提供的闭环数据，本程序没有提供，这里实际没用上。
 
 
 发布：
@@ -345,31 +345,31 @@ public:
 
         // 提取当前激光帧角点、平面点集合
         cloudInfo = *msgIn;
-        pcl::fromROSMsg(msgIn->cloud_corner,  *laserCloudCornerLast);
+        pcl::fromROSMsg(msgIn->cloud_corner,  *laserCloudCornerLast);   //ros转成pcl格式
         pcl::fromROSMsg(msgIn->cloud_surface, *laserCloudSurfLast);
 
         std::lock_guard<std::mutex> lock(mtx);
 
         // mapping执行频率控制
-        static double timeLastProcessing = -1;
-        if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
+        static double timeLastProcessing = -1;  
+        if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)    //当前处理的时间距离上一帧要大于等于mappingProcessInterval（在params.yaml中设置为0.15s，即两帧处理一帧，这可以根据算力来决定大小）
         {
             timeLastProcessing = timeLaserInfoCur;
 
-            // 当前帧位姿初始化
+            // 当前帧位姿初始化；即更新当前匹配结果的初始位姿
             // 1、如果是第一帧，用原始imu数据的RPY初始化当前帧位姿（旋转部分）
             // 2、后续帧，用imu里程计计算两帧之间的增量位姿变换，作用于前一帧的激光位姿，得到当前帧激光位姿
-            updateInitialGuess();
+            updateInitialGuess();   
 
-            // 提取局部角点、平面点云集合，加入局部map
+            // 提取局部角点、平面点云集合，加入局部map；即提取当前帧相关的关键帧并且构建点云局部地图
             // 1、对最近的一帧关键帧，搜索时空维度上相邻的关键帧集合，降采样一下
             // 2、对关键帧集合中的每一帧，提取对应的角点、平面点，加入局部map中
             extractSurroundingKeyFrames();
 
-            // 当前激光帧角点、平面点集合降采样
+            // 当前激光帧角点、平面点集合降采样；即对当前帧进行下采样
             downsampleCurrentScan();
 
-            // scan-to-map优化当前帧位姿
+            // scan-to-map优化当前帧位姿；即对点云配准进行优化问题构建求解
             // 1、要求当前帧特征点数量足够多，且匹配的点数够多，才执行优化
             // 2、迭代30次（上限）优化
             //    1) 当前激光帧角点寻找局部map匹配点
@@ -383,7 +383,7 @@ public:
             // 3、用imu原始RPY数据与scan-to-map优化后的位姿进行加权融合，更新当前帧位姿的roll、pitch，约束z坐标
             scan2MapOptimization();
 
-            // 设置当前帧为关键帧并执行因子图优化
+            // 设置当前帧为关键帧并执行因子图优化；即根据配准结果缺点是否是关键帧
             // 1、计算当前帧与前一帧位姿变换，如果变化太小，不设为关键帧，反之设为关键帧
             // 2、添加激光里程计因子、GPS因子、闭环因子
             // 3、执行因子图优化
@@ -391,13 +391,13 @@ public:
             // 5、添加cloudKeyPoses3D，cloudKeyPoses6D，更新transformTobeMapped，添加当前关键帧的角点、平面点集合
             saveKeyFramesAndFactor();
 
-            // 更新因子图中所有变量节点的位姿，也就是所有历史关键帧的位姿，更新里程计轨迹
+            // 更新因子图中所有变量节点的位姿，也就是所有历史关键帧的位姿，更新里程计轨迹；即调整全局轨迹
             correctPoses();
 
-            // 发布激光里程计
+            // 发布激光里程计；即讲lidar里程计信息发送出去
             publishOdometry();
 
-            // 发布里程计、点云、轨迹
+            // 发布里程计、点云、轨迹；即发送可视化点云
             // 1、发布历史关键帧位姿集合
             // 2、发布局部map的降采样平面点集合
             // 3、发布历史帧（累加的）的角点、平面点降采样集合
@@ -994,64 +994,74 @@ public:
 
 
     /**
-     * 当前帧位姿初始化
+     * 当前帧位姿初始化(作为基于优化的点云匹配，初始值是非常重要的，一个好的初始值会帮助优化问题快速收敛且避免局部最优解的情况)
      * 1、如果是第一帧，用原始imu数据的RPY初始化当前帧位姿（旋转部分）
      * 2、后续帧，用imu里程计计算两帧之间的增量位姿变换，作用于前一帧的激光位姿，得到当前帧激光位姿
     */
     void updateInitialGuess()
     {
-        // 前一帧的位姿，注：这里指lidar的位姿，后面都简写成位姿
-        incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);
+        // transformTobeMapped是前一帧优化后的最佳位姿，注：这里指lidar的位姿，后面都简写成位姿
+        incrementalOdometryAffineFront = trans2Affine3f(transformTobeMapped);   //转换
 
         // 前一帧的初始化姿态角（来自原始imu数据），用于估计第一帧的位姿（旋转部分）
         static Eigen::Affine3f lastImuTransformation;
         
-        // 如果关键帧集合为空，继续进行初始化
+        // initialization 初始化
+        // 如果关键帧集合为空，继续进行初始化（收到是第一帧点云）
         if (cloudKeyPoses3D->points.empty())
         {
-            // 当前帧位姿的旋转部分，用激光帧信息中的RPY（来自imu原始数据）初始化
+            // 当前帧位姿的旋转部分，用激光帧信息中的RPY（来自imu原始数据，）初始化；初始位姿就由（imu）磁力计提供（磁力计---？？？）
             transformTobeMapped[0] = cloudInfo.imuRollInit;
             transformTobeMapped[1] = cloudInfo.imuPitchInit;
             transformTobeMapped[2] = cloudInfo.imuYawInit;
-
+            // 无论是vio还是lio，，系统的不可观测都是四自由度，平移+yaw角，这里虽然由磁力计将yaw对齐，但是也可以考虑不使用yaw
             if (!useImuHeadingInitialization)
                 transformTobeMapped[2] = 0;
-
+            // 保存（imu）磁力计得到的位姿，平移xyz设置为0
             lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); 
             return;
         }
-
+        
+        // use imu pre-integration estimation for pose guess
         // 用当前帧和前一帧对应的imu里程计计算相对位姿变换，再用前一帧的位姿与相对变换，计算当前帧的位姿，存transformTobeMapped
         static bool lastImuPreTransAvailable = false;
         static Eigen::Affine3f lastImuPreTransformation;
+        // 如果有预积分节点提供的里程计
         if (cloudInfo.odomAvailable == true)
         {
+            // 将提供的初值转成eigen的数据结构保存下来
             // 当前帧的初始估计位姿（来自imu里程计），后面用来计算增量位姿变换
             Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX,    cloudInfo.initialGuessY,     cloudInfo.initialGuessZ, 
                                                                cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
+            // 这个标志位表示是否收到过第一帧预积分里程计信息
             if (lastImuPreTransAvailable == false)
             {
                 // 赋值给前一帧
-                lastImuPreTransformation = transBack;
-                lastImuPreTransAvailable = true;
+                lastImuPreTransformation = transBack;   // 将当前里程计结果记录下来
+                lastImuPreTransAvailable = true;        // 收到第一个里程计数据以后这个标志位就是true
             } else {
                 // 当前帧相对于前一帧的位姿变换，imu里程计计算得到
+                // 计算上一个里程计的结果和当前里程计结果之间的delta pose
                 Eigen::Affine3f transIncre = lastImuPreTransformation.inverse() * transBack;
                 // 前一帧的位姿
                 Eigen::Affine3f transTobe = trans2Affine3f(transformTobeMapped);
                 // 当前帧的位姿
+                // 将这个增量加入到上一帧最佳位姿上去，就是当前帧位姿的一个先验估计位姿
                 Eigen::Affine3f transFinal = transTobe * transIncre;
                 // 更新当前帧位姿transformTobeMapped
                 pcl::getTranslationAndEulerAngles(transFinal, transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                               transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+                // 同理，把当前帧的值保存下来
                 // 赋值给前一帧
                 lastImuPreTransformation = transBack;
-
+                // 虽然有里程计信息，仍然需要把imu磁力计得到的旋转记录下来
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
                 return;
             }
         }
 
+        // use imu incremental estimation for pose guess（only rotation）
+        // 如果没有里程计信息，就是用imu的旋转信息来更新，因为单纯使用imu无法得到靠谱的平移信息，因此平移之间设置为0
         // 只在第一帧调用（注意上面的return），用imu数据初始化当前帧位姿，仅初始化旋转部分
         if (cloudInfo.imuAvailable == true)
         {
@@ -2156,13 +2166,13 @@ public:
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "lio_sam");
+    ros::init(argc, argv, "lio_sam");   // ros初始化
 
-    mapOptimization MO;
+    mapOptimization MO; // 定义mapOptimization类
 
-    ROS_INFO("\033[1;32m----> Map Optimization Started.\033[0m");
-    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);
-    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);
+    ROS_INFO("\033[1;32m----> Map Optimization Started.\033[0m");   // 打印消息
+    std::thread loopthread(&mapOptimization::loopClosureThread, &MO);   //  回环检测的线程，专门进行回环检测
+    std::thread visualizeMapThread(&mapOptimization::visualizeGlobalMapThread, &MO);    // 可视化进程，负责rviz可视化的发布
 
     ros::spin();
 

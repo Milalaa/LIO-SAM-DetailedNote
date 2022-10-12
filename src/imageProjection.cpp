@@ -6,15 +6,13 @@ Date: 2021-02-21
 功能简介:
     1、利用当前激光帧起止时刻间的imu数据计算旋转增量，IMU里程计数据（来自ImuPreintegration）计算平移增量，进而对该帧激光每一时刻的激光点进行运动畸变校正（利用相对于激光帧起始时刻的位姿增量，变换当前激光点到起始时刻激光点的坐标系下，实现校正）；
     2、同时用IMU数据的姿态角（RPY，roll、pitch、yaw）、IMU里程计数据的的位姿，对当前帧激光位姿进行粗略初始化。
-
 订阅：
-    1、订阅原始IMU数据；imuTopic
-    2、订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；odomTopic+“_incremental”
-    3、订阅原始激光点云数据。 pointCloudTopic
-
+    1、imuTopic：订阅原始IMU数据；
+    2、odomTopic+“_incremental”：订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；
+    3、pointCloudTopic：订阅原始激光点云数据。 
 发布：
-    1、发布当前帧激光运动畸变校正之后的有效点云，用于rviz展示；
-    2、发布当前帧激光运动畸变校正之后的点云信息，包括点云数据、初始位姿、姿态角、有效点云数据等，发布给FeatureExtraction进行特征提取。
+    1、lio_sam/deskew/cloud_deskewed：发布当前帧激光运动畸变校正之后的有效点云，用于rviz展示；
+    2、lio_sam/deskew/cloud_info：发布当前帧激光运动畸变校正之后的点云信息，包括点云数据、初始位姿、姿态角、有效点云数据等，发布给FeatureExtraction进行特征提取。
 **************************************************/  
 #include "utility.h"
 #include "lio_sam/cloud_info.h"

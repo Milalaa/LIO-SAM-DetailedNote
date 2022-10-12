@@ -6,26 +6,22 @@ Date: 2021-02-21
 TransformFusion类
 功能简介：
     主要功能是订阅激光里程计（来自MapOptimization）和IMU里程计，根据前一时刻激光里程计，和该时刻到当前时刻的IMU里程计变换增量，计算当前时刻IMU里程计；rviz展示IMU里程计轨迹（局部）。
-
 订阅：
-    1、订阅激光里程计，来自MapOptimization；lio_sam/mapping/odometry
-    2、订阅imu里程计，来自ImuPreintegration。odomTopic+"_incremental"
-
+    1、lio_sam/mapping/odometry：订阅激光里程计，来自MapOptimization；
+    2、odomTopic+"_incremental"：订阅imu里程计，来自ImuPreintegration。
 发布：
-    1、发布IMU里程计，用于rviz展示；odomTopic
-    2、发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。lio_sam/imu/path
+    1、odomTopic：发布IMU里程计，用于rviz展示；
+    2、lio_sam/imu/path：发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。
 --------------------------------------------------
 IMUPreintegration类
 功能简介：
-    1、用激光里程计，两帧激光里程计之间的IMU预计分量构建因子图，优化当前帧的状态（包括位姿、速度、偏置）;
-    2、以优化后的状态为基础，施加IMU预计分量，得到每一时刻的IMU里程计。
-
+    1、用激光里程计，两帧激光里程计之间的IMU预积分量构建因子图，优化当前帧的状态（包括位姿、速度、偏置）;
+    2、以优化后的状态为基础，施加IMU预积分量，得到每一时刻的IMU里程计。
 订阅：
-    1、订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；imuTopic
-    2、订阅激光里程计（来自MapOptimization），用两帧之间的IMU预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。lio_sam/mapping/odometry_incremental  
-
+    1、imuTopic：订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；
+    2、lio_sam/mapping/odometry_incremental：订阅激光里程计，来自MapOptimization；用两帧之间的IMU预积分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。
 发布：
-    1、发布imu里程计；odomTopic+"_incremental"
+    1、odomTopic+"_incremental"：发布IMU里程计；
 **************************************************/ 
 #include "utility.h"
 

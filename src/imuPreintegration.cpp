@@ -19,7 +19,7 @@ IMUPreintegration类
     2、以优化后的状态为基础，施加IMU预积分量，得到每一时刻的IMU里程计。
 订阅：
     1、imuTopic：订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；
-    2、lio_sam/mapping/odometry_incremental：订阅激光里程计（来自MapOptimization）；用两帧之间的IMU预积分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。
+    2、lio_sam/mapping/odometry_incremental：订阅激光里程计（来自MapOptimization），用两帧之间的IMU预积分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。
 发布：
     1、odomTopic+"_incremental"：发布IMU里程计；
 **************************************************/ 

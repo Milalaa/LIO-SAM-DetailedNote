@@ -591,6 +591,7 @@ public:
 
         // 查找当前时刻在imuTime下的索引
         int imuPointerFront = 0;
+        // imuPointerCur是imu计算的旋转buffer的总共大小，这里用的就是一种朴素的确保不越界的方法
         while (imuPointerFront < imuPointerCur)
         {
             if (pointTime < imuTime[imuPointerFront])
@@ -598,6 +599,11 @@ public:
             ++imuPointerFront;
         }
 
+        // imuPointerBack   imuPointerFront
+        //  x                       x
+        //           imuPointerCur
+        
+        // 如果时间戳不再两个imu的旋转之间，就直接赋值了
         // 设为离当前时刻最近的旋转增量
         if (pointTime > imuTime[imuPointerFront] || imuPointerFront == 0)
         {
@@ -605,6 +611,7 @@ public:
             *rotYCur = imuRotY[imuPointerFront];
             *rotZCur = imuRotZ[imuPointerFront];
         } else {
+            // 否则 做一个线性插值，得到相对旋转
             // 前后时刻插值计算当前时刻的旋转增量
             int imuPointerBack = imuPointerFront - 1;
             double ratioFront = (pointTime - imuTime[imuPointerBack]) / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
@@ -616,7 +623,7 @@ public:
     }
 
     /**
-     * 在当前激光帧起止时间范围内，计算某一时刻的平移（相对于起始时刻的平移增量）
+     * 在当前激光帧起止时间范围内，计算某一时刻的平移（相对于起始时刻的平移增量），在这里忽略平移补偿
     */
     void findPosition(double relTime, float *posXCur, float *posYCur, float *posZCur)
     {
@@ -644,30 +651,32 @@ public:
         if (deskewFlag == -1 || cloudInfo.imuAvailable == false)
             return *point;
 
-        // relTime是当前激光点相对于激光帧起始时刻的时间，pointTime则是当前激光点的时间戳
+        // relTime是当前激光点相对于激光帧起始时刻的时间（相对时间）+起始时间timeScanCur = pointTime则是当前激光点的时间戳（绝对时间）
         double pointTime = timeScanCur + relTime;
 
         // 在当前激光帧起止时间范围内，计算某一时刻的旋转（相对于起始时刻的旋转增量）
-        float rotXCur, rotYCur, rotZCur;
+        float rotXCur, rotYCur, rotZCur;    // 计算当前点相对起始点的相对旋转
         findRotation(pointTime, &rotXCur, &rotYCur, &rotZCur);
 
-        // 在当前激光帧起止时间范围内，计算某一时刻的平移（相对于起始时刻的平移增量）
+        // 在当前激光帧起止时间范围内，计算某一时刻的平移（相对于起始时刻的平移增量）；这里没有计算平移补偿
         float posXCur, posYCur, posZCur;
         findPosition(relTime, &posXCur, &posYCur, &posZCur);
 
         // 第一个点的位姿增量（0），求逆
         if (firstPointFlag == true)
         {
+            // 计算第一个点的相对位姿
             transStartInverse = (pcl::getTransformation(posXCur, posYCur, posZCur, rotXCur, rotYCur, rotZCur)).inverse();
             firstPointFlag = false;
         }
 
-        // 当前时刻激光点与第一个激光点的位姿变换
+        // 当前时刻激光点与第一个激光点的位姿变换（相对位姿）
         Eigen::Affine3f transFinal = pcl::getTransformation(posXCur, posYCur, posZCur, rotXCur, rotYCur, rotZCur);
         Eigen::Affine3f transBt = transStartInverse * transFinal;
 
         // 当前激光点在第一个激光点坐标系下的坐标
         PointType newPoint;
+        // 就是R x P + t，把点补偿到第一个点对应时刻的位姿
         newPoint.x = transBt(0,0) * point->x + transBt(0,1) * point->y + transBt(0,2) * point->z + transBt(0,3);
         newPoint.y = transBt(1,0) * point->x + transBt(1,1) * point->y + transBt(1,2) * point->z + transBt(1,3);
         newPoint.z = transBt(2,0) * point->x + transBt(2,1) * point->y + transBt(2,2) * point->z + transBt(2,3);
@@ -702,7 +711,7 @@ public:
             if (range < lidarMinRange || range > lidarMaxRange) // 距离太小或者太原都认为是异常点
                 continue;
 
-            // 扫描线检查：取出对应的在第几根scan上
+            // 扫描线检查：取出对应的在第几根scan（第几根线）上
             int rowIdn = laserCloudIn->points[i].ring;
             if (rowIdn < 0 || rowIdn >= N_SCAN) // scan id必须合理
                 continue;
@@ -715,27 +724,27 @@ public:
 
             // 水平扫描角度步长，例如一周扫描1800次，则两次扫描间隔角度0.2°
             static float ang_res_x = 360.0/float(Horizon_SCAN);
-            int columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2;
+            int columnIdn = -round((horizonAngle-90.0)/ang_res_x) + Horizon_SCAN/2; // 计算水平线束id，转换到x负方向e为起始，顺时针为正方向，范围[0,H]
             if (columnIdn >= Horizon_SCAN)
                 columnIdn -= Horizon_SCAN;
 
-            if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
+            if (columnIdn < 0 || columnIdn >= Horizon_SCAN) // 对水平id进行检查
                 continue;
 
             // 已经存过该点，不再处理
-            if (rangeMat.at<float>(rowIdn, columnIdn) != FLT_MAX)
+            if (rangeMat.at<float>(rowIdn, columnIdn) != FLT_MAX)   // 如果这个位置有填充了就跳过
                 continue;
 
             // 激光运动畸变校正
             // 利用当前帧起止时刻之间的imu数据计算旋转增量，imu里程计数据计算平移增量，进而将每一时刻激光点位置变换到第一个激光点坐标系下，进行运动补偿
-            thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);
+            thisPoint = deskewPoint(&thisPoint, laserCloudIn->points[i].time);  // 对点做运动补偿
 
             // 矩阵存激光点的距离
-            rangeMat.at<float>(rowIdn, columnIdn) = range;
+            rangeMat.at<float>(rowIdn, columnIdn) = range;  //将这个点的距离数据保存进range矩阵中
 
             // 转换成一维索引，存校正之后的激光点
-            int index = columnIdn + rowIdn * Horizon_SCAN;
-            fullCloud->points[index] = thisPoint;
+            int index = columnIdn + rowIdn * Horizon_SCAN;  // 算出这个点的索引
+            fullCloud->points[index] = thisPoint;   // 保存这个点的坐标
         }
     }
 
@@ -746,9 +755,10 @@ public:
     {
         // 有效激光点数量
         int count = 0;
-        // 遍历所有激光点
+        // 遍历所有激光点，遍历每一根scan
         for (int i = 0; i < N_SCAN; ++i)
         {
+            // 这个scan可以计算曲率的起始点（计算曲率需要左右各五个点）
             // 记录每根扫描线起始第5个激光点在一维数组中的索引
             cloudInfo.startRingIndex[i] = count - 1 + 5;
 
@@ -758,14 +768,20 @@ public:
                 if (rangeMat.at<float>(i,j) != FLT_MAX)
                 {
                     // 记录激光点对应的Horizon_SCAN方向上的索引
+                    // mark the points’ column index dor marking occlusion later
+                    // 这个点对应着哪一根垂直线
                     cloudInfo.pointColInd[count] = j;
                     // 激光点距离
                     cloudInfo.pointRange[count] = rangeMat.at<float>(i,j);
                     // 加入有效激光点
+                    // 他的3D坐标信息
                     extractedCloud->push_back(fullCloud->points[j + i*Horizon_SCAN]);
+                    // size of extracted cloud
+                    // count只在有效点才回累加
                     ++count;
                 }
             }
+            // 这个scan可以计算曲率的终点
             // 记录每根扫描线倒数第5个激光点在一维数组中的索引
             cloudInfo.endRingIndex[i] = count -1 - 5;
         }
@@ -776,7 +792,7 @@ public:
     */
     void publishClouds()
     {
-        cloudInfo.header = cloudHeader;
+        cloudInfo.header = cloudHeader; // 发布提取出的有效的点
         cloudInfo.cloud_deskewed  = publishCloud(&pubExtractedCloud, extractedCloud, cloudHeader.stamp, lidarFrame);
         pubLaserCloudInfo.publish(cloudInfo);
     }

@@ -434,13 +434,14 @@ public:
 
         int cloudSize = cloudIn->size();
         cloudOut->resize(cloudSize);
-
+        // 使用openmp进行并行加速
         Eigen::Affine3f transCur = pcl::getTransformation(transformIn->x, transformIn->y, transformIn->z, transformIn->roll, transformIn->pitch, transformIn->yaw);
         
         #pragma omp parallel for num_threads(numberOfCores)
         for (int i = 0; i < cloudSize; ++i)
         {
             const auto &pointFrom = cloudIn->points[i];
+            // 每个点都施加Rx+t这样一个过程
             cloudOut->points[i].x = transCur(0,0) * pointFrom.x + transCur(0,1) * pointFrom.y + transCur(0,2) * pointFrom.z + transCur(0,3);
             cloudOut->points[i].y = transCur(1,0) * pointFrom.x + transCur(1,1) * pointFrom.y + transCur(1,2) * pointFrom.z + transCur(1,3);
             cloudOut->points[i].z = transCur(2,0) * pointFrom.x + transCur(2,1) * pointFrom.y + transCur(2,2) * pointFrom.z + transCur(2,3);
@@ -1112,12 +1113,12 @@ public:
     {
         pcl::PointCloud<PointType>::Ptr surroundingKeyPoses(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr surroundingKeyPosesDS(new pcl::PointCloud<PointType>());
-        std::vector<int> pointSearchInd;
-        std::vector<float> pointSearchSqDis;
+        std::vector<int> pointSearchInd;    //保存kdtree提取出来的元素的索引
+        std::vector<float> pointSearchSqDis;    // 保存距离查询位置的距离的数组
 
         // kdtree的输入，全局关键帧位姿集合（历史所有关键帧集合）
         kdtreeSurroundingKeyPoses->setInputCloud(cloudKeyPoses3D); 
-        // 对最近的一帧关键帧，在半径区域内搜索空间区域上相邻的关键帧集合
+        // 对最近的一帧关键帧，在半径区域内搜索空间区域上相邻的关键帧集合；surroundingKeyframeSearchRadius在.param中设置
         kdtreeSurroundingKeyPoses->radiusSearch(cloudKeyPoses3D->back(), (double)surroundingKeyframeSearchRadius, pointSearchInd, pointSearchSqDis);
         // 遍历搜索结果，pointSearchInd存的是结果在cloudKeyPoses3D下面的索引
         for (int i = 0; i < (int)pointSearchInd.size(); ++i)
@@ -1127,15 +1128,16 @@ public:
             surroundingKeyPoses->push_back(cloudKeyPoses3D->points[id]);
         }
 
-        // 降采样一下
+        // 避免关键帧过多，降采样一下
         downSizeFilterSurroundingKeyPoses.setInputCloud(surroundingKeyPoses);
         downSizeFilterSurroundingKeyPoses.filter(*surroundingKeyPosesDS);
 
         // 加入时间上相邻的一些关键帧，比如当载体在原地转圈，这些帧加进来是合理的
         int numPoses = cloudKeyPoses3D->size();
+        // 刚刚是提取了一些空间上比较近的关键帧，然后再提取一些时间上比较近的关键帧
         for (int i = numPoses-1; i >= 0; --i)
         {
-            if (timeLaserInfoCur - cloudKeyPoses6D->points[i].time < 10.0)
+            if (timeLaserInfoCur - cloudKeyPoses6D->points[i].time < 10.0)  //  最近十秒的关键帧也保存下来
                 surroundingKeyPosesDS->push_back(cloudKeyPoses3D->points[i]);
             else
                 break;
@@ -1150,6 +1152,7 @@ public:
     */
     void extractCloud(pcl::PointCloud<PointType>::Ptr cloudToExtract)
     {
+        // 分别存储角点和面点相关的局部地图
         // 相邻关键帧集合对应的角点、平面点，加入到局部map中；注：称之为局部map，后面进行scan-to-map匹配，所用到的map就是这里的相邻关键帧对应点云集合
         laserCloudCornerFromMap->clear();
         laserCloudSurfFromMap->clear(); 
@@ -1157,37 +1160,43 @@ public:
         for (int i = 0; i < (int)cloudToExtract->size(); ++i)
         {
             // 距离超过阈值，丢弃
+            // 简单校验下关键帧距离不能太远，这个实际上不太会触发
             if (pointDistance(cloudToExtract->points[i], cloudKeyPoses3D->back()) > surroundingKeyframeSearchRadius)
                 continue;
 
             // 相邻关键帧索引
             int thisKeyInd = (int)cloudToExtract->points[i].intensity;
+            // 如果这个关键帧对应的点云信息已经存储在一个地图容器里（为减少同一个点云转到世界坐标系下重复操作运算量）
             if (laserCloudMapContainer.find(thisKeyInd) != laserCloudMapContainer.end()) 
             {
+                // 直接从容器中取出来加到局部地图中
                 *laserCloudCornerFromMap += laserCloudMapContainer[thisKeyInd].first;
                 *laserCloudSurfFromMap   += laserCloudMapContainer[thisKeyInd].second;
             } else {
                 // 相邻关键帧对应的角点、平面点云，通过6D位姿变换到世界坐标系下
+                // 如果这个点云没有实现存取，那就通过该帧对应的位姿，把该帧点云从当前帧的位姿转到世界坐标系下
                 pcl::PointCloud<PointType> laserCloudCornerTemp = *transformPointCloud(cornerCloudKeyFrames[thisKeyInd],  &cloudKeyPoses6D->points[thisKeyInd]);
                 pcl::PointCloud<PointType> laserCloudSurfTemp = *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
-                // 加入局部map
+                // 点云转换后加到局部map
                 *laserCloudCornerFromMap += laserCloudCornerTemp;
                 *laserCloudSurfFromMap   += laserCloudSurfTemp;
+                // 把转换后的面点和角点存进这个容器中，方便后续直接加入点云地图，避免点云转换的操作，节约时间
                 laserCloudMapContainer[thisKeyInd] = make_pair(laserCloudCornerTemp, laserCloudSurfTemp);
             }
             
         }
 
-        // 降采样局部角点map
+        // 将提取的关键帧的点云转到世界坐标系下后，避免点云过度密集，因此对面点和角点的局部地图做一个下采样的过程
+        // 降采样局部角点map，在params.yaml文件中设置mappingCornerLeafsize=0.2
         downSizeFilterCorner.setInputCloud(laserCloudCornerFromMap);
         downSizeFilterCorner.filter(*laserCloudCornerFromMapDS);
         laserCloudCornerFromMapDSNum = laserCloudCornerFromMapDS->size();
-        // 降采样局部平面点map
+        // 降采样局部平面点map，在params.yaml文件中设置mappingSurfLeafsize=0.4，比起角点面点更为稀疏
         downSizeFilterSurf.setInputCloud(laserCloudSurfFromMap);
         downSizeFilterSurf.filter(*laserCloudSurfFromMapDS);
         laserCloudSurfFromMapDSNum = laserCloudSurfFromMapDS->size();
 
-        // 太大了，清空一下内存
+        // 如果这个局部地图容器太大，就清空一下内存
         if (laserCloudMapContainer.size() > 1000)
             laserCloudMapContainer.clear();
     }
@@ -1199,7 +1208,7 @@ public:
     */
     void extractSurroundingKeyFrames()
     {
-        if (cloudKeyPoses3D->points.empty() == true)
+        if (cloudKeyPoses3D->points.empty() == true) // 如果当前没有关键帧，就return了
             return; 
         
         // if (loopClosureEnableFlag == true)
@@ -1216,7 +1225,7 @@ public:
     }
 
     /**
-     * 当前激光帧角点、平面点集合降采样
+     * 当前激光帧角点、平面点集合降采样，也是为了减少计算量（scan-to-map，map要下采样，scan同理也要）
     */
     void downsampleCurrentScan()
     {

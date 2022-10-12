@@ -8,9 +8,9 @@ Date: 2021-02-21
     2、同时用IMU数据的姿态角（RPY，roll、pitch、yaw）、IMU里程计数据的的位姿，对当前帧激光位姿进行粗略初始化。
 
 订阅：
-    1、订阅原始IMU数据；
-    2、订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；
-    3、订阅原始激光点云数据。
+    1、订阅原始IMU数据；imuTopic
+    2、订阅IMU里程计数据，来自ImuPreintegration，表示每一时刻对应的位姿；odomTopic+“_incremental”
+    3、订阅原始激光点云数据。 pointCloudTopic
 
 发布：
     1、发布当前帧激光运动畸变校正之后的有效点云，用于rviz展示；
@@ -774,14 +774,14 @@ public:
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "lio_sam");
+    ros::init(argc, argv, "lio_sam");   // ros初始化
 
-    ImageProjection IP;
+    ImageProjection IP; // 定义ImageProjection类
     
-    ROS_INFO("\033[1;32m----> Image Projection Started.\033[0m");
+    ROS_INFO("\033[1;32m----> Image Projection Started.\033[0m");   // 打印消息
 
-    ros::MultiThreadedSpinner spinner(3);
-    spinner.spin();
+    ros::MultiThreadedSpinner spinner(3);   // 多线程触发，开辟四个线程进行回调，提升速度
+    spinner.spin(); // 程序停留等待回调函数执行
     
     return 0;
 }

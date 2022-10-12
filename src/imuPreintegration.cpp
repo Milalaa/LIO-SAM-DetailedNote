@@ -8,13 +8,12 @@ TransformFusion类
     主要功能是订阅激光里程计（来自MapOptimization）和IMU里程计，根据前一时刻激光里程计，和该时刻到当前时刻的IMU里程计变换增量，计算当前时刻IMU里程计；rviz展示IMU里程计轨迹（局部）。
 
 订阅：
-    1、订阅激光里程计，来自MapOptimization；
-    2、订阅imu里程计，来自ImuPreintegration。
-
+    1、订阅激光里程计，来自MapOptimization；lio_sam/mapping/odometry
+    2、订阅imu里程计，来自ImuPreintegration。odomTopic+"_incremental"
 
 发布：
-    1、发布IMU里程计，用于rviz展示；
-    2、发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。
+    1、发布IMU里程计，用于rviz展示；odomTopic
+    2、发布IMU里程计轨迹，仅展示最近一帧激光里程计时刻到当前时刻之间的轨迹。lio_sam/imu/path
 --------------------------------------------------
 IMUPreintegration类
 功能简介：
@@ -22,11 +21,11 @@ IMUPreintegration类
     2、以优化后的状态为基础，施加IMU预计分量，得到每一时刻的IMU里程计。
 
 订阅：
-    1、订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；
-    2、订阅激光里程计（来自MapOptimization），用两帧之间的IMU预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。     
+    1、订阅IMU原始数据，以因子图优化后的激光里程计为基础，施加两帧之间的IMU预计分量，预测每一时刻（IMU频率）的IMU里程计；imuTopic
+    2、订阅激光里程计（来自MapOptimization），用两帧之间的IMU预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的IMU里程计，以及下一次因子图优化）。lio_sam/mapping/odometry_incremental  
 
 发布：
-    1、发布imu里程计；
+    1、发布imu里程计；odomTopic+"_incremental"
 **************************************************/ 
 #include "utility.h"
 
@@ -121,7 +120,7 @@ public:
     /**
      * 订阅激光里程计，来自mapOptimization（回环）
     */
-    //将全局位姿保存下来
+    //将全局位姿保存下来(loop)
     void lidarOdometryHandler(const nav_msgs::Odometry::ConstPtr& odomMsg)
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -282,7 +281,7 @@ public:
     */
     IMUPreintegration()
     {
-        // 订阅imu原始数据，用下面因子图优化的结果，施加两帧之间的imu预计分量，预测每一时刻（imu频率）的imu里程计
+        // 订阅imu原始数据，用下面因子图优化的结果，施加两帧之间的imu预积分量，预测每一时刻（imu频率）的imu里程计
         subImu      = nh.subscribe<sensor_msgs::Imu>  (imuTopic,                   2000, &IMUPreintegration::imuHandler,      this, ros::TransportHints().tcpNoDelay());
         // 订阅激光里程计，来自mapOptimization.cpp，用两帧之间的imu预计分量构建因子图，优化当前帧位姿（这个位姿仅用于更新每时刻的imu里程计，以及下一次因子图优化）
         subOdometry = nh.subscribe<nav_msgs::Odometry>("lio_sam/mapping/odometry_incremental", 5,    &IMUPreintegration::odometryHandler, this, ros::TransportHints().tcpNoDelay());

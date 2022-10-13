@@ -666,7 +666,7 @@ public:
 
 
     /**
-     * 闭环线程
+     * 回环线程
      * 1、闭环scan-to-map，icp优化位姿
      *   1) 在历史关键帧中查找与当前关键帧距离最近的关键帧集合，选择时间相隔较远的一帧作为候选闭环帧
      *   2) 提取当前关键帧特征点集合，降采样；提取闭环匹配关键帧前后相邻若干帧的关键帧特征点集合，降采样
@@ -675,19 +675,19 @@ public:
     */
     void loopClosureThread()
     {
-        if (loopClosureEnableFlag == false)
+        if (loopClosureEnableFlag == false) // 如果不需要进行回环检测，那么就退出这个线程
             return;
 
-        ros::Rate rate(loopClosureFrequency);
-        while (ros::ok())
+        ros::Rate rate(loopClosureFrequency);   // 设置回环检测的频率；loopClosureFrequency在param.yaml中也有设置为1hz（1秒执行一次）
+        while (ros::ok())   // 死循环
         {
-            rate.sleep();
+            rate.sleep();   // 执行完一次就必须sleep一段时间，否则该线程的cpu占用会非常高；同ros::Rate rate(loopClosureFrequency)中时间，这里为1s
             // 闭环scan-to-map，icp优化位姿
             // 1、在历史关键帧中查找与当前关键帧距离最近的关键帧集合，选择时间相隔较远的一帧作为候选闭环帧
             // 2、提取当前关键帧特征点集合，降采样；提取闭环匹配关键帧前后相邻若干帧的关键帧特征点集合，降采样
             // 3、执行scan-to-map优化，调用icp方法，得到优化后位姿，构造闭环因子需要的数据，在因子图优化中一并加入更新位姿
             // 注：闭环的时候没有立即更新当前帧的位姿，而是添加闭环因子，让图优化去更新位姿
-            performLoopClosure();
+            performLoopClosure();   // 执行回环检测
             // rviz展示闭环边
             visualizeLoopClosure();
         }
@@ -717,12 +717,14 @@ public:
     */
     void performLoopClosure()
     {
+        // 如果没有关键帧，就没法进行回环检测了
         if (cloudKeyPoses3D->points.empty() == true)
             return;
 
-        mtx.lock();
-        *copy_cloudKeyPoses3D = *cloudKeyPoses3D;
-        *copy_cloudKeyPoses6D = *cloudKeyPoses6D;
+        mtx.lock(); //线程锁
+        // 把存储关键帧的位姿的点云copy出来，避免线程冲突
+        *copy_cloudKeyPoses3D = *cloudKeyPoses3D;   // 关键帧的xyz，不带姿态 
+        *copy_cloudKeyPoses6D = *cloudKeyPoses6D;   // 关键帧的xyz+姿态
         mtx.unlock();
 
         // 当前关键帧索引，候选闭环匹配帧索引

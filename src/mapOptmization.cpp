@@ -1313,7 +1313,7 @@ public:
                 // 特征值分解（证明这些边缘点是不是直线）
                 cv::eigen(matA1, matD1, matV1); // matD1：matA1的线特征值；matV1:matA1的线特征向量
 
-                // 如果最大的特征值相比次大特征值，大3背，认为构成了线，角点是合格的
+                // 如果最大的特征值相比次大特征值，大3倍，认为构成了线，角点是合格的
                 if (matD1.at<float>(0, 0) > 3 * matD1.at<float>(0, 1)) {
                     // 当前帧角点坐标（map系下）
                     float x0 = pointSel.x;
@@ -1360,7 +1360,7 @@ public:
                     coeff.z = s * lc;
                     // 点到直线距离
                     coeff.intensity = s * ld2;
-                    // 如果残差小于10cm，就认为是一个有效的约束
+                    // 如果残差小于10cm，就认为是一个有效的约束；匹配
                     if (s > 0.1) {
                         // 当前激光帧角点，加入匹配集合中
                         laserCloudOriCornerVec[i] = pointOri;
@@ -1398,10 +1398,10 @@ public:
             // 在局部平面点map中查找当前平面点相邻的5个平面点
             kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
 
-            Eigen::Matrix<float, 5, 3> matA0;
-            Eigen::Matrix<float, 5, 1> matB0;
+            Eigen::Matrix<float, 5, 3> matA0;   // matA0:5*3
+            Eigen::Matrix<float, 5, 1> matB0;   // matB0:5*1
             Eigen::Vector3f matX0;
-
+            // 平面方程Ax+By+Cz+1=0（这里不是用特征值分解的方法，而是用差变方程）d=1
             matA0.setZero();
             matB0.fill(-1);
             matX0.setZero();
@@ -1415,9 +1415,11 @@ public:
                 }
 
                 // 假设平面方程为ax+by+cz+1=0，这里就是求方程的系数abc，d=1
+                // 求解Ax=b这个超定方程
                 matX0 = matA0.colPivHouseholderQr().solve(matB0);
 
-                // 平面方程的系数，也是法向量的分量
+                // 平面方程Ax+By+Cz+1=0的系数，也是法向量的分量
+                // 求出来的x就是这个平面的法向量
                 float pa = matX0(0, 0);
                 float pb = matX0(1, 0);
                 float pc = matX0(2, 0);
@@ -1425,9 +1427,10 @@ public:
 
                 // 单位法向量
                 float ps = sqrt(pa * pa + pb * pb + pc * pc);
-                pa /= ps; pb /= ps; pc /= ps; pd /= ps;
+                pa /= ps; pb /= ps; pc /= ps; pd /= ps; // 归一化，将法向量模长统一为1（为了方便计算点到平面的距离）
 
                 // 检查平面是否合格，如果5个点中有点到平面的距离超过0.2m，那么认为这些点太分散了，不构成平面
+                // 每个点代入平面方程，计算点到平面的距离，如果距离大于0.2m，认为这个平面曲率偏大，就是无效的平面
                 bool planeValid = true;
                 for (int j = 0; j < 5; j++) {
                     if (fabs(pa * laserCloudSurfFromMapDS->points[pointSearchInd[j]].x +
@@ -1438,25 +1441,25 @@ public:
                     }
                 }
 
-                // 平面合格
+                // 如果平面合格
                 if (planeValid) {
                     // 当前激光帧点到平面距离
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
 
                     float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
-                            + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
+                            + pointSel.y * pointSel.y + pointSel.z * pointSel.z));  // 分母：当前点投到世界坐标系的模长再开根号
 
-                    // 点到平面垂线单位法向量（其实等价于平面法向量）
+                    // 点到平面垂线单位法向量（雅可比方向，其实等价于平面法向量）
                     coeff.x = s * pa;
                     coeff.y = s * pb;
                     coeff.z = s * pc;
                     // 点到平面距离
                     coeff.intensity = s * pd2;
 
-                    if (s > 0.1) {
+                    if (s > 0.1) {  //匹配
                         // 当前激光帧平面点，加入匹配集合中
                         laserCloudOriSurfVec[i] = pointOri;
-                        // 参数
+                        // 平面的参数
                         coeffSelSurfVec[i] = coeff;
                         laserCloudOriSurfFlag[i] = true;
                     }
@@ -1466,13 +1469,13 @@ public:
     }
 
     /**
-     * 提取当前帧中与局部map匹配上了的角点、平面点，加入同一集合
+     * 提取当前帧中与局部map匹配上了的角点、平面点，加入同一集合；即将角点约束和面点约束统一到一起
     */
     void combineOptimizationCoeffs()
     {
         // 遍历当前帧角点集合，提取出与局部map匹配上了的角点
         for (int i = 0; i < laserCloudCornerLastDSNum; ++i){
-            if (laserCloudOriCornerFlag[i] == true){
+            if (laserCloudOriCornerFlag[i] == true){    // 只有标志位为true的时候才是有效约束
                 laserCloudOri->push_back(laserCloudOriCornerVec[i]);
                 coeffSel->push_back(coeffSelCornerVec[i]);
             }
@@ -1484,7 +1487,7 @@ public:
                 coeffSel->push_back(coeffSelSurfVec[i]);
             }
         }
-        // 清空标记
+        // 清空标记位
         std::fill(laserCloudOriCornerFlag.begin(), laserCloudOriCornerFlag.end(), false);
         std::fill(laserCloudOriSurfFlag.begin(), laserCloudOriSurfFlag.end(), false);
     }
@@ -1493,9 +1496,11 @@ public:
      * scan-to-map优化
      * 对匹配特征点计算Jacobian矩阵，观测值为特征点到直线、平面的距离，构建高斯牛顿方程，迭代优化当前位姿，存transformTobeMapped
      * 公式推导：todo
+     * 实际上是高斯牛顿，并不涉及LM（同loam）
     */
     bool LMOptimization(int iterCount)
     {
+        // 原始的loam代码是将lidar坐标系转到相机坐标系，这里把原先loam中的代码拷贝了过来，但是为了坐标系的统一，就先转到相机坐标系优化，然后结果转回lidar坐标系
         // This optimization is from the original loam_velodyne by Ji Zhang, need to cope with coordinate transformation
         // lidar <- camera      ---     camera <- lidar
         // x = z                ---     x = y
@@ -1530,6 +1535,7 @@ public:
 
         // 遍历匹配特征点，构建Jacobian矩阵
         for (int i = 0; i < laserCloudSelNum; i++) {
+            // 首先将当前点以及点到线（面）的单位向量转到坐标系
             // lidar -> camera todo
             pointOri.x = laserCloudOri->points[i].y;
             pointOri.y = laserCloudOri->points[i].z;
@@ -1540,6 +1546,7 @@ public:
             coeff.z = coeffSel->points[i].x;
             coeff.intensity = coeffSel->points[i].intensity;
             // in camera
+            // 相机系下的旋转顺序是Y-X-Z对应lidar系下Z-Y-X
             float arx = (crx*sry*srz*pointOri.x + crx*crz*sry*pointOri.y - srx*sry*pointOri.z) * coeff.x
                       + (-srx*srz*pointOri.x - crz*srx*pointOri.y - crx*pointOri.z) * coeff.y
                       + (crx*cry*srz*pointOri.x + crx*cry*crz*pointOri.y - cry*srx*pointOri.z) * coeff.z;
@@ -1553,6 +1560,7 @@ public:
                       + (crx*crz*pointOri.x - crx*srz*pointOri.y) * coeff.y
                       + ((sry*srz + cry*crz*srx)*pointOri.x + (crz*sry-cry*srx*srz)*pointOri.y)*coeff.z;
             // lidar -> camera
+            // 这里就是把camera转到lidar了
             matA.at<float>(i, 0) = arz;
             matA.at<float>(i, 1) = arx;
             matA.at<float>(i, 2) = ary;
@@ -1562,27 +1570,29 @@ public:
             // 点到直线距离、平面距离，作为观测值
             matB.at<float>(i, 0) = -coeff.intensity;
         }
-
+        // 构成JTJ以及-JTe矩阵
         cv::transpose(matA, matAt);
         matAtA = matAt * matA;
         matAtB = matAt * matB;
-        // J^T·J·delta_x = -J^T·f 高斯牛顿
+        // 求解增量；J^T·J·delta_x = -J^T·f 高斯牛顿
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
-
+ 
         // 首次迭代，检查近似Hessian矩阵（J^T·J）是否退化，或者称为奇异，行列式值=0 todo
         if (iterCount == 0) {
-
+            // 检查一下是否有退化的情况
             cv::Mat matE(1, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV(6, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV2(6, 6, CV_32F, cv::Scalar::all(0));
-
+            // 对JTJ进行特征值分解
             cv::eigen(matAtA, matE, matV);
             matV.copyTo(matV2);
 
             isDegenerate = false;
             float eignThre[6] = {100, 100, 100, 100, 100, 100};
             for (int i = 5; i >= 0; i--) {
+                // 特征值从小到大遍历，如果小于阈值就认为退化
                 if (matE.at<float>(0, i) < eignThre[i]) {
+                    // 对应的特征向量全部置0
                     for (int j = 0; j < 6; j++) {
                         matV2.at<float>(i, j) = 0;
                     }
@@ -1593,7 +1603,7 @@ public:
             }
             matP = matV.inv() * matV2;
         }
-
+        // 如果发生退化，就对增量进行修改，退化方向不更新
         if (isDegenerate)
         {
             cv::Mat matX2(6, 1, CV_32F, cv::Scalar::all(0));
@@ -1601,7 +1611,7 @@ public:
             matX = matP * matX2;
         }
 
-        // 更新当前位姿 x = x + delta_x
+        // 增量更新，更新当前位姿 x = x + delta_x
         transformTobeMapped[0] += matX.at<float>(0, 0);
         transformTobeMapped[1] += matX.at<float>(1, 0);
         transformTobeMapped[2] += matX.at<float>(2, 0);
@@ -1618,10 +1628,12 @@ public:
                             pow(matX.at<float>(4, 0) * 100, 2) +
                             pow(matX.at<float>(5, 0) * 100, 2));
 
+        // 旋转和平移增量足够小，认为优化问题收敛了
         // delta_x很小，认为收敛
         if (deltaR < 0.05 && deltaT < 0.05) {
             return true; 
         }
+        // 否则继续优化
         return false; 
     }
 
@@ -1685,26 +1697,30 @@ public:
     }
 
     /**
-     * 用imu原始RPY数据与scan-to-map优化后的位姿进行加权融合，更新当前帧位姿的roll、pitch，约束z坐标
+     * 把结果和imu进行一些融合。用imu原始RPY数据与scan-to-map优化后的位姿进行加权融合，更新当前帧位姿的roll、pitch，约束z坐标
     */
     void transformUpdate()
     {
+        // 可以获取九轴imu的世界系下的姿态
         if (cloudInfo.imuAvailable == true)
         {
+            // 因为roll和pitch原则上全程可观，因此这里把lidar推算出来的姿态和磁力计结果做一个加权平均
+            // 首先判断车翻了没（判断俯仰角），车翻了做slam就无意义了，当然手持设备可以pitch很大，这里主要避免插值产生的奇异
             // 俯仰角小于1.4
             if (std::abs(cloudInfo.imuPitchInit) < 1.4)
             {
-                double imuWeight = imuRPYWeight;
+                double imuWeight = imuRPYWeight;    //  imuPPYWeight从Param.yaml中获得，为0.01，说明lidar的权重为99%
                 tf::Quaternion imuQuaternion;
                 tf::Quaternion transformQuaternion;
                 double rollMid, pitchMid, yawMid;
 
                 // roll角求加权均值，用scan-to-map优化得到的位姿与imu原始RPY数据，进行加权平均
-                transformQuaternion.setRPY(transformTobeMapped[0], 0, 0);
-                imuQuaternion.setRPY(cloudInfo.imuRollInit, 0, 0);
-                tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);
-                transformTobeMapped[0] = rollMid;
+                transformQuaternion.setRPY(transformTobeMapped[0], 0, 0);   // lidar匹配获得的roll角转成四元数
+                imuQuaternion.setRPY(cloudInfo.imuRollInit, 0, 0);  //imu获得的roll角
+                tf::Matrix3x3(transformQuaternion.slerp(imuQuaternion, imuWeight)).getRPY(rollMid, pitchMid, yawMid);   // 使用四元数球面插值
+                transformTobeMapped[0] = rollMid;   // 插值结果作为roll的最终结果
 
+                // pitch角同理
                 // pitch角求加权均值，用scan-to-map优化得到的位姿与imu原始RPY数据，进行加权平均
                 transformQuaternion.setRPY(0, transformTobeMapped[1], 0);
                 imuQuaternion.setRPY(0, cloudInfo.imuPitchInit, 0);
@@ -1714,11 +1730,13 @@ public:
         }
 
         // 更新当前帧位姿的roll, pitch, z坐标；因为是小车，roll、pitch是相对稳定的，不会有很大变动，一定程度上可以信赖imu的数据，z是进行高度约束
+        // 主要针对室内2d场景下，已知先验可以加上这些约束
         transformTobeMapped[0] = constraintTransformation(transformTobeMapped[0], rotation_tollerance);
         transformTobeMapped[1] = constraintTransformation(transformTobeMapped[1], rotation_tollerance);
         transformTobeMapped[5] = constraintTransformation(transformTobeMapped[5], z_tollerance);
 
         // 当前帧位姿
+        // 最终结果也可以转成eigen结构
         incrementalOdometryAffineBack = trans2Affine3f(transformTobeMapped);
     }
 

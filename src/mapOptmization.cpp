@@ -1247,11 +1247,11 @@ public:
     */
     void updatePointAssociateToMap()
     {
-        transPointAssociateToMap = trans2Affine3f(transformTobeMapped);
+        transPointAssociateToMap = trans2Affine3f(transformTobeMapped); // transformTobeMapped是数组，把他转成eigen的一个对象更好操作
     }
 
     /**
-     * 当前激光帧角点寻找局部map匹配点
+     * 当前激光帧角点寻找局部map匹配点；边缘点的优化
      * 1、更新当前帧位姿，将当前帧角点坐标变换到map系下，在局部map中查找5个最近点，距离小于1m，且5个点构成直线（用距离中心点的协方差矩阵，特征值进行判断），则认为匹配上了
      * 2、计算当前帧角点到直线的距离、垂线的单位向量，存储为角点参数
     */
@@ -1260,11 +1260,12 @@ public:
         // 更新当前帧位姿
         updatePointAssociateToMap();
 
-        // 遍历当前帧角点集合
+        // 使用openmp并行加速（如果每个循环都是相互独立的就可以使用）
         #pragma omp parallel for num_threads(numberOfCores)
+        // 遍历当前帧角点集合
         for (int i = 0; i < laserCloudCornerLastDSNum; i++)
         {
-            PointType pointOri, pointSel, coeff;
+            PointType pointOri, pointSel, coeff;    // pointSel 搜索点；pointSearchInd 找到的5个点的索引；pointSearchsqDis 5个点的距离（pcl自动从小到大排序）；
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
 
@@ -1273,13 +1274,13 @@ public:
             // 根据当前帧位姿，变换到世界坐标系（map系）下
             pointAssociateToMap(&pointOri, &pointSel);
             // 在局部角点map中查找当前角点相邻的5个角点
-            kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+            kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis); 
 
             cv::Mat matA1(3, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matD1(1, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matV1(3, 3, CV_32F, cv::Scalar::all(0));
             
-            // 要求距离都小于1m
+            // 要求距离都小于1m；计算找到的点中距离当前点最远的点，如果距离太大说明这个约束不可信，就跳过
             if (pointSearchSqDis[4] < 1.0) {
                 // 计算5个点的均值坐标，记为中心点
                 float cx = 0, cy = 0, cz = 0;
@@ -1304,28 +1305,31 @@ public:
                 }
                 a11 /= 5; a12 /= 5; a13 /= 5; a22 /= 5; a23 /= 5; a33 /= 5;
 
-                // 构建协方差矩阵
+                // 构建协方差矩阵（是个对称的）
                 matA1.at<float>(0, 0) = a11; matA1.at<float>(0, 1) = a12; matA1.at<float>(0, 2) = a13;
                 matA1.at<float>(1, 0) = a12; matA1.at<float>(1, 1) = a22; matA1.at<float>(1, 2) = a23;
                 matA1.at<float>(2, 0) = a13; matA1.at<float>(2, 1) = a23; matA1.at<float>(2, 2) = a33;
 
-                // 特征值分解
-                cv::eigen(matA1, matD1, matV1);
+                // 特征值分解（证明这些边缘点是不是直线）
+                cv::eigen(matA1, matD1, matV1); // matD1：matA1的线特征值；matV1:matA1的线特征向量
 
-                // 如果最大的特征值相比次大特征值，大很多，认为构成了线，角点是合格的
+                // 如果最大的特征值相比次大特征值，大3背，认为构成了线，角点是合格的
                 if (matD1.at<float>(0, 0) > 3 * matD1.at<float>(0, 1)) {
                     // 当前帧角点坐标（map系下）
                     float x0 = pointSel.x;
                     float y0 = pointSel.y;
                     float z0 = pointSel.z;
                     // 局部map对应中心角点，沿着特征向量（直线方向）方向，前后各取一个点
+                    // 特征向量对应的就是直线的方向向量；通过点的均值往两边拓展，构成一个线的两个端点
+                    // matV1.at<float>(0, 0)即最大特征值matD1.at<float>(0, 0)对应的特征向量
                     float x1 = cx + 0.1 * matV1.at<float>(0, 0);
                     float y1 = cy + 0.1 * matV1.at<float>(0, 1);
                     float z1 = cz + 0.1 * matV1.at<float>(0, 2);
                     float x2 = cx - 0.1 * matV1.at<float>(0, 0);
                     float y2 = cy - 0.1 * matV1.at<float>(0, 1);
                     float z2 = cz - 0.1 * matV1.at<float>(0, 2);
-
+                    
+                    // 下面是计算点到线的残差和垂线方向（即雅克比方向，梯度下降方向）
                     // area_012，也就是三个点组成的三角形面积*2，叉积的模|axb|=a*b*sin(theta)
                     float a012 = sqrt(((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) * ((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
                                     + ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) * ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
@@ -1347,7 +1351,7 @@ public:
                     // 三角形的高，也就是点到直线距离
                     float ld2 = a012 / l12;
 
-                    // 距离越大，s越小，是个距离惩罚因子（权重）
+                    // 一个简单的核函数，（残差）距离越大，s越小，是个距离惩罚因子（权重）
                     float s = 1 - 0.9 * fabs(ld2);
 
                     // 点到直线的垂线段单位向量
@@ -1356,7 +1360,7 @@ public:
                     coeff.z = s * lc;
                     // 点到直线距离
                     coeff.intensity = s * ld2;
-
+                    // 如果残差小于10cm，就认为是一个有效的约束
                     if (s > 0.1) {
                         // 当前激光帧角点，加入匹配集合中
                         laserCloudOriCornerVec[i] = pointOri;
@@ -1637,18 +1641,18 @@ public:
     */
     void scan2MapOptimization()
     {
-        // 要求有关键帧
+        // 如果没有关键帧，那也没办法做当前帧到局部地图的匹配
         if (cloudKeyPoses3D->points.empty())
             return;
 
-        // 当前激光帧的角点、平面点数量足够多
+        // 判断当前激光帧的角点、平面点数量是否足够多；edgeFeatureMinValidNum&surfFeatureMinValidNum在param.yaml文件中设定
         if (laserCloudCornerLastDSNum > edgeFeatureMinValidNum && laserCloudSurfLastDSNum > surfFeatureMinValidNum)
         {
-            // kdtree输入为局部map点云
+            // 分别把角点面点局部地图构建kdtree
             kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMapDS);
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
-            // 迭代30次
+            // 迭代30次（这里是手写优化器，继承了loam、lego_loam写法，是高斯牛顿的方法；aloam是通过ceres）
             for (int iterCount = 0; iterCount < 30; iterCount++)
             {
                 // 每次迭代清空特征点集合

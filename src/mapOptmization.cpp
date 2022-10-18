@@ -1775,20 +1775,22 @@ public:
     */
     bool saveFrame()
     {
+        // 如果没有关键帧，那直接认为是关键帧
         if (cloudKeyPoses3D->points.empty())
             return true;
 
-        // 前一帧位姿
-        Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
-        // 当前帧位姿
+        // 取出前一关键帧位姿
+        Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());   // cloudKeyPose6D所有关键帧的信息，back取最后一个元素
+        // 当前帧的位姿transformTobeMapped转成eigen形式
         Eigen::Affine3f transFinal = pcl::getTransformation(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                             transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-        // 位姿变换增量
+        // 计算两个位姿之间的delta pose
         Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
         float x, y, z, roll, pitch, yaw;
+        // 转成平移角和欧拉角的形式
         pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw);
 
-        // 旋转和平移量都较小，当前帧不设为关键帧
+        // 旋转和平移量都较小，当前帧不设为关键帧，surroundingkeyframeAddingAngleThreshold阈值在params.yaml中设置为0.2rad，surroundingkeyframeAddingDistThreshold为1m
         if (abs(roll)  < surroundingkeyframeAddingAngleThreshold &&
             abs(pitch) < surroundingkeyframeAddingAngleThreshold && 
             abs(yaw)   < surroundingkeyframeAddingAngleThreshold &&
@@ -1799,25 +1801,30 @@ public:
     }
 
     /**
-     * 添加激光里程计因子
+     * 添加激光里程计因子；odom因子
     */
     void addOdomFactor()
     {
-        if (cloudKeyPoses3D->points.empty())
+        if (cloudKeyPoses3D->points.empty())    // 如果是第一帧关键帧
         {
             // 第一帧初始化先验因子
+            // 置信度就设置差一点，尤其是不可观的平移和yaw角（yaw角不一定能和磁力计对其，pich和raw和重力对齐；平移和yaw不可观符合四自由度不可观）
             noiseModel::Diagonal::shared_ptr priorNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-2, 1e-2, M_PI*M_PI, 1e8, 1e8, 1e8).finished()); // rad*rad, meter*meter
+            // 增加先验约束，对第0个节点增加约束
             gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
-            // 变量节点设置初始值
+            // 加入节点信息；变量节点设置初始值
             initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
         }else{
+            // 如果不是第一帧，就增加帧间约束
+            // 这时帧间约束置信度就设置高一些
             // 添加激光里程计因子
             noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+            // 转成gtsam格式
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
-            // 参数：前一帧id，当前帧id，前一帧与当前帧的位姿变换（作为观测值），噪声协方差
+            // 帧间约束；参数：前一帧id，当前帧id，前一帧与当前帧的位姿变换（作为观测值），噪声协方差（置信度）
             gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
-            // 变量节点设置初始值
+            // 加入节点信息；变量节点设置初始值
             initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
         }
     }
@@ -1827,6 +1834,7 @@ public:
     */
     void addGPSFactor()
     {
+        // 如果没有gps信息就算了
         if (gpsQueue.empty())
             return;
 
@@ -1835,11 +1843,12 @@ public:
             return;
         else
         {
+            // 第一个关键帧和最后一个关键帧相差相近也算了，要么刚起步，要么会触发回环
             if (pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 5.0)
                 return;
         }
 
-        // 位姿协方差很小，没必要加入GPS数据进行校正
+        // gtsam反馈当前x，y的置信度，位姿协方差（置信度高）很小，没必要加入GPS数据进行校正；poseCovThreshold在params.yaml中设置为25
         if (poseCovariance(3,3) < poseCovThreshold && poseCovariance(4,4) < poseCovThreshold)
             return;
 
@@ -1852,34 +1861,36 @@ public:
             {
                 gpsQueue.pop_front();
             }
-            // 超过当前帧0.2s之后，退出
+            // 超过当前帧0.2s之后，退出，等等lidar再计算
             else if (gpsQueue.front().header.stamp.toSec() > timeLaserInfoCur + 0.2)
             {
                 break;
             }
             else
             {
+                // 说明这个gps时间上距离当前帧已经比较近了，那就把这个数据取出来
                 nav_msgs::Odometry thisGPS = gpsQueue.front();
                 gpsQueue.pop_front();
 
-                // GPS噪声协方差太大，不能用
+                // GPS噪声协方差太大（置信度太低），不能用
                 float noise_x = thisGPS.pose.covariance[0];
                 float noise_y = thisGPS.pose.covariance[7];
                 float noise_z = thisGPS.pose.covariance[14];
-                if (noise_x > gpsCovThreshold || noise_y > gpsCovThreshold)
+                if (noise_x > gpsCovThreshold || noise_y > gpsCovThreshold) // gpsCovThreshold在params.yaml中设置为2m
                     continue;
 
-                // GPS里程计位置
+                // 取出GPS里程计位置
                 float gps_x = thisGPS.pose.pose.position.x;
                 float gps_y = thisGPS.pose.pose.position.y;
                 float gps_z = thisGPS.pose.pose.position.z;
-                if (!useGpsElevation)
+                if (!useGpsElevation)   // 通常gps的z没有x y准，因此这里可以不使用z值（useGpsElevation=false在params.yaml中设置）；lidar在z轴漂移比较严重，如果gps信号比较好，z漂移不怎么严重的话，可以考虑用起来
                 {
-                    gps_z = transformTobeMapped[5];
+                    gps_z = transformTobeMapped[5]; //没有用GPS的z值，用的里程计估计出来的z
                     noise_z = 0.01;
                 }
 
                 // (0,0,0)无效数据
+                // gps的x或者y太小说明还没有初始化好
                 if (abs(gps_x) < 1e-6 && abs(gps_y) < 1e-6)
                     continue;
 
@@ -1888,16 +1899,19 @@ public:
                 curGPSPoint.x = gps_x;
                 curGPSPoint.y = gps_y;
                 curGPSPoint.z = gps_z;
-                if (pointDistance(curGPSPoint, lastGPSPoint) < 5.0)
+                if (pointDistance(curGPSPoint, lastGPSPoint) < 5.0) // 加入gps观测不宜太频繁，相邻不超过5m
                     continue;
                 else
                     lastGPSPoint = curGPSPoint;
 
                 // 添加GPS因子
                 gtsam::Vector Vector3(3);
-                Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
+                // gps的置信度，标准差设置为最小1m，也就是不会特别信任gps信号
+                Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);  
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
-                gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
+                // 调用gtsam中集成的gps约束
+                gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);    // cloudKeyPoses3D->size()当前帧还没有加进来，就还是size
+                // 加入gps之后等同于回环，需要触发较多的isam update
                 gtSAMgraph.add(gps_factor);
 
                 aLoopIsClosed = true;
@@ -1946,7 +1960,7 @@ public:
         if (saveFrame() == false)
             return;
 
-        // 激光里程计因子
+        // 激光里程计因子；odom因子
         addOdomFactor();
 
         // GPS因子
@@ -1961,7 +1975,7 @@ public:
         // 执行优化
         isam->update(gtSAMgraph, initialEstimate);
         isam->update();
-
+        // 如果加入了gps的约束或者回环约束，isam需要进行更多次的优化
         if (aLoopIsClosed == true)
         {
             isam->update();
@@ -1971,17 +1985,17 @@ public:
             isam->update();
         }
 
-        // update之后要清空一下保存的因子图，注：历史数据不会清掉，ISAM保存起来了
+        // update之后要清空一下保存的因子图（约束和节点），注：历史数据不会清掉，ISAM保存起来了
         gtSAMgraph.resize(0);
         initialEstimate.clear();
-
+        // 下面保存关键帧信息
         PointType thisPose3D;
         PointTypePose thisPose6D;
         Pose3 latestEstimate;
 
         // 优化结果
         isamCurrentEstimate = isam->calculateEstimate();
-        // 当前帧位姿结果
+        // 取出优化后的最新关键帧位姿
         latestEstimate = isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size()-1);
         // cout << "****************************************************" << endl;
         // isamCurrentEstimate.print("Current estimate: ");

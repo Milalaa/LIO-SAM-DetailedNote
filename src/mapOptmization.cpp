@@ -586,13 +586,13 @@ public:
     */
     void visualizeGlobalMapThread()
     {
-        ros::Rate rate(0.2);
+        ros::Rate rate(0.2);    // 更新频率设置为0.2hz
         while (ros::ok()){
             rate.sleep();
             // 发布局部关键帧map的特征点云
             publishGlobalMap();
         }
-
+        // 当ros被杀死后，执行保存地图功能
         if (savePCD == false)
             return;
 
@@ -606,13 +606,14 @@ public:
     }
 
     /**
-     * 发布局部关键帧map的特征点云
+     * 发布可视化全局地图
     */
     void publishGlobalMap()
     {
+        // 如果没有订阅者就不发布，节省系统负载
         if (pubLaserCloudSurround.getNumSubscribers() == 0)
             return;
-
+        // 没有关键帧自然也没有全局地图了
         if (cloudKeyPoses3D->points.empty() == true)
             return;
 
@@ -626,11 +627,11 @@ public:
         std::vector<int> pointSearchIndGlobalMap;
         std::vector<float> pointSearchSqDisGlobalMap;
         mtx.lock();
-        kdtreeGlobalMap->setInputCloud(cloudKeyPoses3D);
-        kdtreeGlobalMap->radiusSearch(cloudKeyPoses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);
+        kdtreeGlobalMap->setInputCloud(cloudKeyPoses3D);    // 把所有关键帧送入kdtree
+        kdtreeGlobalMap->radiusSearch(cloudKeyPoses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);  // 寻找自信关键帧一定范围内的其他关键帧
         mtx.unlock();
 
-        for (int i = 0; i < (int)pointSearchIndGlobalMap.size(); ++i)
+        for (int i = 0; i < (int)pointSearchIndGlobalMap.size(); ++i)   // 把这些找到的关键帧的位姿保存起来
             globalMapKeyPoses->push_back(cloudKeyPoses3D->points[pointSearchIndGlobalMap[i]]);
         // 降采样
         pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyPoses;
@@ -644,14 +645,17 @@ public:
             if (pointDistance(globalMapKeyPosesDS->points[i], cloudKeyPoses3D->back()) > globalMapVisualizationSearchRadius)
                 continue;
             int thisKeyInd = (int)globalMapKeyPosesDS->points[i].intensity;
+            // 将每一帧的点云通过位姿转到世界坐标系下
             *globalMapKeyFrames += *transformPointCloud(cornerCloudKeyFrames[thisKeyInd],  &cloudKeyPoses6D->points[thisKeyInd]);
             *globalMapKeyFrames += *transformPointCloud(surfCloudKeyFrames[thisKeyInd],    &cloudKeyPoses6D->points[thisKeyInd]);
         }
         // 降采样，发布
+        // 转换后的点云也进行一个下采样
         pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyFrames; // for global map visualization
         downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
         downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
         downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
+        // 最终发布出去
         publishCloud(&pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
     }
 
@@ -731,46 +735,49 @@ public:
         int loopKeyCur;
         int loopKeyPre;
         // not-used
+        // 首先看一下外部通知的回环消息（手动的告知第几帧和第几帧之间形成回环）
         if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)
             // 在历史关键帧中查找与当前关键帧距离最近的关键帧集合，选择时间相隔较远的一帧作为候选闭环帧
-            if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
+            if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)   // loopKeyCur当前帧id，loopKeyPre回环帧id
                 return;
 
-        // 提取
-        pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
+        // 检测出回环之后开始计算两帧相对位姿变换（icp），点云配准scan-to-map
+        pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());    // 空的点云
         pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
         {
-            // 提取当前关键帧特征点集合，降采样
-            loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);
-            // 提取闭环匹配关键帧前后相邻若干帧的关键帧特征点集合，降采样
-            loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum);
-            // 如果特征点较少，返回
+            // 提取当前关键帧特征点集合，降采样；点云1
+            loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);    // 当前帧（scan）
+            // 提取闭环匹配关键帧前后相邻若干帧的关键帧特征点集合，降采样；点云2
+            loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum); // 历史帧（map），historyKeyframeSearchNum历史帧搜索范围（param.yaml中设置为25）
+            // 如果点云数目较少，返回
             if (cureKeyframeCloud->size() < 300 || prevKeyframeCloud->size() < 1000)
                 return;
             // 发布闭环匹配关键帧局部map
             if (pubHistoryKeyFrames.getNumSubscribers() != 0)
+                // 把局部地图发布出去供rviz可视化使用
                 publishCloud(&pubHistoryKeyFrames, prevKeyframeCloud, timeLaserInfoStamp, odometryFrame);
         }
 
-        // ICP参数设置
+        // 使用简单的ico进行帧到局部地图的配准；ICP参数设置
         static pcl::IterativeClosestPoint<PointType, PointType> icp;
-        icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
-        icp.setMaximumIterations(100);
-        icp.setTransformationEpsilon(1e-6);
+        icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);    // 最大相关距离；historyKeyframeSearchRadius=15
+        icp.setMaximumIterations(100);  // 最大优化次数
+        icp.setTransformationEpsilon(1e-6); // 单次变化范围
         icp.setEuclideanFitnessEpsilon(1e-6);
         icp.setRANSACIterations(0);
 
         // scan-to-map，调用icp匹配
-        icp.setInputSource(cureKeyframeCloud);
-        icp.setInputTarget(prevKeyframeCloud);
+        // 设置两个点云
+        icp.setInputSource(cureKeyframeCloud);  // 当前（scan）
+        icp.setInputTarget(prevKeyframeCloud);  // 之前（map）
         pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
-        icp.align(*unused_result);
+        icp.align(*unused_result);  // 执行点云配准
 
-        // 未收敛，或者匹配不够好
+        // 检查icp是否收敛且得分是否满足要求
         if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
             return;
 
-        // 发布当前关键帧经过闭环优化后的位姿变换之后的特征点云
+        // 发布当前关键帧经过闭环优化后的位姿变换之后的特征点云；可视化
         if (pubIcpKeyFrames.getNumSubscribers() != 0)
         {
             pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
@@ -787,22 +794,23 @@ public:
         Eigen::Affine3f tWrong = pclPointToAffine3f(copy_cloudKeyPoses6D->points[loopKeyCur]);
         // 闭环优化后当前帧位姿
         Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;
-        pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
-        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+        pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);    // 将闭环优化后当前帧位姿转成平移和欧拉角
+        gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z)); // poseFrom是闭环优化后当前帧位姿
         // 闭环匹配帧的位姿
-        gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
+        gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);   // poseTo是闭环关键帧（前）的位姿
         gtsam::Vector Vector6(6);
-        float noiseScore = icp.getFitnessScore();
+        float noiseScore = icp.getFitnessScore();   // 使用icp的得分作为她们约束的噪声项
         Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
         noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 
         // 添加闭环因子需要的数据
+        // 将两帧索引，两帧相对位姿和噪声作为回环约束送入队列（gtsam，主进程使用队列进行优化）
         mtx.lock();
         loopIndexQueue.push_back(make_pair(loopKeyCur, loopKeyPre));
         loopPoseQueue.push_back(poseFrom.between(poseTo));
         loopNoiseQueue.push_back(constraintNoise);
         mtx.unlock();
-
+        // 保存已存在的约束对
         loopIndexContainer[loopKeyCur] = loopKeyPre;
     }
 
@@ -812,8 +820,9 @@ public:
     bool detectLoopClosureDistance(int *latestID, int *closestID)
     {
         // 当前关键帧帧
-        int loopKeyCur = copy_cloudKeyPoses3D->size() - 1;
-        int loopKeyPre = -1;
+        // 检测最新帧是否和其他帧形成回环，所以后面一帧的id就是最后一个关键帧
+        int loopKeyCur = copy_cloudKeyPoses3D->size() - 1;  // （当前帧）最新帧的索引，size-1；copy_cloudKeyPose3D历史关键帧
+        int loopKeyPre = -1;    // 之前帧（回环帧）
 
         // 当前帧已经添加过闭环对应关系，不再继续添加
         auto it = loopIndexContainer.find(loopKeyCur);
@@ -823,20 +832,22 @@ public:
         // 在历史关键帧中查找与当前关键帧距离最近的关键帧集合
         std::vector<int> pointSearchIndLoop;
         std::vector<float> pointSearchSqDisLoop;
-        kdtreeHistoryKeyPoses->setInputCloud(copy_cloudKeyPoses3D);
-        kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
-        
+        kdtreeHistoryKeyPoses->setInputCloud(copy_cloudKeyPoses3D); // 把只包含关键帧位移信息的点云填充kdtree
+        // copy_cloudKeyPoses3D->back()最新关键帧，historyKeyframeSearchRadius为半径搜索关键帧（param.yaml中设置为15），存储于pointSearchIndLoop, pointSearchSqDisLoop
+        kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);    
         // 在候选关键帧集合中，找到与当前帧时间相隔较远的帧，设为候选匹配帧
         for (int i = 0; i < (int)pointSearchIndLoop.size(); ++i)
         {
             int id = pointSearchIndLoop[i];
+            // 必须满足时间上超过一定阈值historyKeyframeSearchTimeDiff（param.yaml设置为30），才认为是一个有效的回环
             if (abs(copy_cloudKeyPoses6D->points[id].time - timeLaserInfoCur) > historyKeyframeSearchTimeDiff)
             {
+                // 此时就退出了
                 loopKeyPre = id;
                 break;
             }
         }
-
+        // 如果没有找到回环或者回环找到自己身上去了，就认为是此次回环寻找失败
         if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
             return false;
 
@@ -847,7 +858,7 @@ public:
     }
 
     /**
-     * not-used, 来自外部闭环检测程序提供的闭环匹配索引对
+     * not-used, 来自外部闭环检测程序提供的闭环匹配索引对（手动的告知第几帧和第几帧之间会形成回环）
     */
     bool detectLoopClosureExternal(int *latestID, int *closestID)
     {
@@ -911,19 +922,21 @@ public:
         // 提取key索引的关键帧前后相邻若干帧的关键帧特征点集合
         nearKeyframes->clear();
         int cloudSize = copy_cloudKeyPoses6D->size();
+        // searchNum是搜索范围
         for (int i = -searchNum; i <= searchNum; ++i)
         {
-            int keyNear = key + i;
-            if (keyNear < 0 || keyNear >= cloudSize )
+            int keyNear = key + i;  // searchNum是相对的索引差，和当前的key补上得出绝对
+            if (keyNear < 0 || keyNear >= cloudSize )   // 如果超出范围就不行
                 continue;
+            // 否则把对应角点和面点的点云转到世界坐标系下去，并且加到同一点云去
             *nearKeyframes += *transformPointCloud(cornerCloudKeyFrames[keyNear], &copy_cloudKeyPoses6D->points[keyNear]);
             *nearKeyframes += *transformPointCloud(surfCloudKeyFrames[keyNear],   &copy_cloudKeyPoses6D->points[keyNear]);
         }
-
+        // 如果没有有效点云就算了
         if (nearKeyframes->empty())
             return;
 
-        // 降采样
+        // 把点云下采样
         pcl::PointCloud<PointType>::Ptr cloud_temp(new pcl::PointCloud<PointType>());
         downSizeFilterICP.setInputCloud(nearKeyframes);
         downSizeFilterICP.filter(*cloud_temp);
@@ -931,15 +944,15 @@ public:
     }
 
     /**
-     * rviz展示闭环边
+     * rviz展示闭环边，将已有的回环约束可视化出来
     */
     void visualizeLoopClosure()
     {
-        if (loopIndexContainer.empty())
+        if (loopIndexContainer.empty()) //  如果没有回环就算了
             return;
         
         visualization_msgs::MarkerArray markerArray;
-        // 闭环顶点
+        // 闭环顶点，回环约束的两帧作为node添加
         visualization_msgs::Marker markerNode;
         markerNode.header.frame_id = odometryFrame;
         markerNode.header.stamp = timeLaserInfoStamp;
@@ -951,7 +964,7 @@ public:
         markerNode.scale.x = 0.3; markerNode.scale.y = 0.3; markerNode.scale.z = 0.3; 
         markerNode.color.r = 0; markerNode.color.g = 0.8; markerNode.color.b = 1;
         markerNode.color.a = 1;
-        // 闭环边
+        // 闭环边，两帧之间约束作为edge添加
         visualization_msgs::Marker markerEdge;
         markerEdge.header.frame_id = odometryFrame;
         markerEdge.header.stamp = timeLaserInfoStamp;
@@ -964,7 +977,7 @@ public:
         markerEdge.color.r = 0.9; markerEdge.color.g = 0.9; markerEdge.color.b = 0;
         markerEdge.color.a = 1;
 
-        // 遍历闭环
+        // 遍历所有闭环约束
         for (auto it = loopIndexContainer.begin(); it != loopIndexContainer.end(); ++it)
         {
             int key_cur = it->first;
@@ -973,6 +986,7 @@ public:
             p.x = copy_cloudKeyPoses6D->points[key_cur].x;
             p.y = copy_cloudKeyPoses6D->points[key_cur].y;
             p.z = copy_cloudKeyPoses6D->points[key_cur].z;
+            // 添加node和edge
             markerNode.points.push_back(p);
             markerEdge.points.push_back(p);
             p.x = copy_cloudKeyPoses6D->points[key_pre].x;
@@ -984,6 +998,7 @@ public:
 
         markerArray.markers.push_back(markerNode);
         markerArray.markers.push_back(markerEdge);
+        // 最后发不出去供可视化使用
         pubLoopConstraintEdge.publish(markerArray);
     }
 

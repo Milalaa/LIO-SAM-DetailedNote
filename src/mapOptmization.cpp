@@ -1925,24 +1925,28 @@ public:
     */
     void addLoopFactor()
     {
+        // 有一个专门的回环检测线程会检测回环，检测到就会给这个队列塞入回环结果
         if (loopIndexQueue.empty())
             return;
 
-        // 闭环队列
+        // 把队列里所有的回环约束都添加进来
         for (int i = 0; i < (int)loopIndexQueue.size(); ++i)
         {
             // 闭环边对应两帧的索引
             int indexFrom = loopIndexQueue[i].first;
             int indexTo = loopIndexQueue[i].second;
-            // 闭环边的位姿变换
+            // 闭环边的位姿变换，帧间约束
             gtsam::Pose3 poseBetween = loopPoseQueue[i];
+            // 回环的置信度就是icp的得分
             gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
+            //加入约束
             gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
         }
-
-        loopIndexQueue.clear();
+        // 清空回环相关队列
+        loopIndexQueue.clear(); 
         loopPoseQueue.clear();
         loopNoiseQueue.clear();
+        // 标志位设置为true
         aLoopIsClosed = true;
     }
 
@@ -1972,7 +1976,7 @@ public:
         // cout << "****************************************************" << endl;
         // gtSAMgraph.print("GTSAM Graph:\n");
         
-        // 执行优化
+        // 所有因子加完了，就调用isam接口更新图模型
         isam->update(gtSAMgraph, initialEstimate);
         isam->update();
         // 如果加入了gps的约束或者回环约束，isam需要进行更多次的优化
@@ -2000,11 +2004,11 @@ public:
         // cout << "****************************************************" << endl;
         // isamCurrentEstimate.print("Current estimate: ");
 
+        // 平移信息取出来保存进cloudKeyPoses3D这个结构中，其中索引作为intensity值
         // cloudKeyPoses3D加入当前帧位姿
         thisPose3D.x = latestEstimate.translation().x();
         thisPose3D.y = latestEstimate.translation().y();
         thisPose3D.z = latestEstimate.translation().z();
-        // 索引
         thisPose3D.intensity = cloudKeyPoses3D->size(); 
         cloudKeyPoses3D->push_back(thisPose3D);
 
@@ -2022,10 +2026,10 @@ public:
         // cout << "****************************************************" << endl;
         // cout << "Pose covariance:" << endl;
         // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
-        // 位姿协方差
+        // 保存当前位姿的置信度（位姿协方差）
         poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
 
-        // transformTobeMapped更新当前帧位姿
+        // 将优化后的位姿更新到transformTobeMapped数组中更新当前帧位姿，作为当前最佳估计值
         transformTobeMapped[0] = latestEstimate.rotation().roll();
         transformTobeMapped[1] = latestEstimate.rotation().pitch();
         transformTobeMapped[2] = latestEstimate.rotation().yaw();
@@ -2033,17 +2037,17 @@ public:
         transformTobeMapped[4] = latestEstimate.translation().y();
         transformTobeMapped[5] = latestEstimate.translation().z();
 
-        // 当前帧激光角点、平面点，降采样集合
+        // 当前帧激光角点、平面点分别拷贝一下，降采样集合
         pcl::PointCloud<PointType>::Ptr thisCornerKeyFrame(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr thisSurfKeyFrame(new pcl::PointCloud<PointType>());
         pcl::copyPointCloud(*laserCloudCornerLastDS,  *thisCornerKeyFrame);
         pcl::copyPointCloud(*laserCloudSurfLastDS,    *thisSurfKeyFrame);
 
-        // 保存特征点降采样集合
+        // 关键帧的点云保存下来
         cornerCloudKeyFrames.push_back(thisCornerKeyFrame);
         surfCloudKeyFrames.push_back(thisSurfKeyFrame);
 
-        // 更新里程计轨迹
+        // 根据当前最新位姿更新rviz可视化
         updatePath(thisPose6D);
     }
 
@@ -2052,19 +2056,22 @@ public:
     */
     void correctPoses()
     {
+        // 没有关键帧，自然也没有什么意义
         if (cloudKeyPoses3D->points.empty())
             return;
 
+        // 只有回环以及gps信息这些会触发全局调整信息才回触发
         if (aLoopIsClosed == true)
         {
-            // 清空局部map
+            // 很多位姿会发生变化，因子之前的容器内转到世界坐标系下的很多点云就需要调整，因此这里索性清空
             laserCloudMapContainer.clear();
-            // 清空里程计轨迹
+            // 清空里程计轨迹path
             globalPath.poses.clear();
             // 更新因子图中所有变量节点的位姿，也就是所有历史关键帧的位姿
             int numPoses = isamCurrentEstimate.size();
             for (int i = 0; i < numPoses; ++i)
             {
+                // 更新所有关键帧的位姿
                 cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().x();
                 cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().y();
                 cloudKeyPoses3D->points[i].z = isamCurrentEstimate.at<Pose3>(i).translation().z();
@@ -2076,10 +2083,10 @@ public:
                 cloudKeyPoses6D->points[i].pitch = isamCurrentEstimate.at<Pose3>(i).rotation().pitch();
                 cloudKeyPoses6D->points[i].yaw   = isamCurrentEstimate.at<Pose3>(i).rotation().yaw();
 
-                // 更新里程计轨迹
+                // 更新里程计轨迹path
                 updatePath(cloudKeyPoses6D->points[i]);
             }
-
+            // 标志位置位
             aLoopIsClosed = false;
         }
     }
@@ -2109,7 +2116,7 @@ public:
     */
     void publishOdometry()
     {
-        // 发布激光里程计，odom等价map
+        // 发布激光里程计，odom等价map；发送当前帧的位姿
         nav_msgs::Odometry laserOdometryROS;
         laserOdometryROS.header.stamp = timeLaserInfoStamp;
         laserOdometryROS.header.frame_id = odometryFrame;
@@ -2120,7 +2127,7 @@ public:
         laserOdometryROS.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
         pubLaserOdometryGlobal.publish(laserOdometryROS);
 
-        // 发布TF，odom->lidar
+        // 发布TF，odom->lidar；发生lidar在odom坐标系下的tf
         static tf::TransformBroadcaster br;
         tf::Transform t_odom_to_lidar = tf::Transform(tf::createQuaternionFromRPY(transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]),
                                                       tf::Vector3(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]));
@@ -2128,22 +2135,25 @@ public:
         br.sendTransform(trans_odom_to_lidar);
 
         // Publish odometry for ROS (incremental)
+        // 发送增量位姿变化
+        // 这里主要用于给imu预积分模块使用，需要里程计是平滑的
         static bool lastIncreOdomPubFlag = false;
         static nav_msgs::Odometry laserOdomIncremental;
         static Eigen::Affine3f increOdomAffine; 
+        // 该标志位处理一次后始终位true
         if (lastIncreOdomPubFlag == false)
         {
             lastIncreOdomPubFlag = true;
-            laserOdomIncremental = laserOdometryROS;
+            laserOdomIncremental = laserOdometryROS;    // 记录当前位姿
             increOdomAffine = trans2Affine3f(transformTobeMapped);
         } else {
-            // 当前帧与前一帧之间的位姿变换
+            // 当前帧与前一帧之间的位姿变换（scan matching之后，而不是根据回环或者gps调整之后的位姿）之间的位姿增量
             Eigen::Affine3f affineIncre = incrementalOdometryAffineFront.inverse() * incrementalOdometryAffineBack;
             // 还是当前帧位姿（打印一下数据，可以看到与激光里程计的位姿transformTobeMapped是一样的）
             increOdomAffine = increOdomAffine * affineIncre;
-            float x, y, z, roll, pitch, yaw;
+            float x, y, z, roll, pitch, yaw;    // 分解成欧拉角和平移向量
             pcl::getTranslationAndEulerAngles (increOdomAffine, x, y, z, roll, pitch, yaw);
-
+            // 如果有imu信号，同样对roll和pitch做插值
             if (cloudInfo.imuAvailable == true)
             {
                 if (std::abs(cloudInfo.imuPitchInit) < 1.4)
@@ -2194,7 +2204,7 @@ public:
             return;
         // 发布历史关键帧位姿集合
         publishCloud(&pubKeyPoses, cloudKeyPoses3D, timeLaserInfoStamp, odometryFrame);
-        // 发布局部map的降采样平面点集合
+        // 发布局部map的降采样平面点集合；发送周围局部地图点云信息
         publishCloud(&pubRecentKeyFrames, laserCloudSurfFromMapDS, timeLaserInfoStamp, odometryFrame);
         
         // 发布历史帧（累加的）的角点、平面点降采样集合
@@ -2202,8 +2212,10 @@ public:
         {
             pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
             PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
+            // 把当前帧点云转换到世界坐标系下去
             *cloudOut += *transformPointCloud(laserCloudCornerLastDS,  &thisPose6D);
             *cloudOut += *transformPointCloud(laserCloudSurfLastDS,    &thisPose6D);
+            // 发送当前点云
             publishCloud(&pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, odometryFrame);
         }
         // 发布当前帧原始点云配准之后的点云
@@ -2213,9 +2225,10 @@ public:
             pcl::fromROSMsg(cloudInfo.cloud_deskewed, *cloudOut);
             PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
             *cloudOut = *transformPointCloud(cloudOut,  &thisPose6D);
+            // 发送原始点云
             publishCloud(&pubCloudRegisteredRaw, cloudOut, timeLaserInfoStamp, odometryFrame);
         }
-        // 发布里程计轨迹
+        // 发布里程计轨迹path
         if (pubPath.getNumSubscribers() != 0)
         {
             globalPath.header.stamp = timeLaserInfoStamp;

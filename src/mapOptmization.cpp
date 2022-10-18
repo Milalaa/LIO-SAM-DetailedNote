@@ -15,18 +15,18 @@ Date: 2021-02-21
 
 
 发布：
-    1、发布历史关键帧里程计；
-    2、发布局部关键帧map的特征点云；
-    3、发布激光里程计，rviz中表现为坐标轴；
-    4、发布激光里程计；
-    5、发布激光里程计路径，rviz中表现为载体的运行轨迹；
-    6、发布地图保存服务；
-    7、发布闭环匹配关键帧局部map；
-    8、发布当前关键帧经过闭环优化后的位姿变换之后的特征点云；
-    9、发布闭环边，rviz中表现为闭环帧之间的连线；
-    10、发布局部map的降采样平面点集合；
-    11、发布历史帧（累加的）的角点、平面点降采样集合；
-    12、发布当前帧原始点云配准之后的点云。
+    1、lio_sam/mapping/trajectory：发布历史关键帧里程计；
+    2、lio_sam/mapping/map_global：发布局部关键帧map的特征点云；
+    3、lio_sam/mapping/odometry：发布激光里程计，rviz中表现为坐标轴；
+    4、lio_sam/mapping/odometry_incremental：发布激光里程计；
+    5、lio_sam/mapping/path：发布激光里程计路径，rviz中表现为载体的运行轨迹；
+    6、lio_sam/save_map：发布地图保存服务；
+    7、lio_sam/mapping/icp_loop_closure_history_cloud：发布闭环匹配关键帧局部map；
+    8、lio_sam/mapping/icp_loop_closure_corrected_cloud：发布当前关键帧经过闭环优化后的位姿变换之后的特征点云；
+    9、lio_sam/mapping/loop_closure_constraints：发布闭环边，rviz中表现为闭环帧之间的连线；
+    10、lio_sam/mapping/map_local：发布局部map的降采样平面点集合；
+    11、lio_sam/mapping/cloud_registered：发布历史帧（累加的）的角点、平面点降采样集合；
+    12、lio_sam/mapping/cloud_registered_raw：发布当前帧原始点云配准之后的点云。
 **************************************************/ 
 #include "utility.h"
 #include "lio_sam/cloud_info.h"

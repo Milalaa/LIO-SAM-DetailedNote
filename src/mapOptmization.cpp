@@ -1371,7 +1371,7 @@ public:
                     // 一个简单的核函数，（残差）距离越大，s越小，是个距离惩罚因子（权重）
                     float s = 1 - 0.9 * fabs(ld2);
 
-                    // 点到直线的垂线段单位向量
+                    // 点到直线的垂线段单位向量，雅可比矩阵
                     coeff.x = s * la;
                     coeff.y = s * lb;
                     coeff.z = s * lc;
@@ -1578,19 +1578,19 @@ public:
                       + ((sry*srz + cry*crz*srx)*pointOri.x + (crz*sry-cry*srx*srz)*pointOri.y)*coeff.z;
             // lidar -> camera
             // 这里就是把camera转到lidar了
-            matA.at<float>(i, 0) = arz;
-            matA.at<float>(i, 1) = arx;
+            matA.at<float>(i, 0) = arz; // 旋转部分
+            matA.at<float>(i, 1) = arx; 
             matA.at<float>(i, 2) = ary;
-            matA.at<float>(i, 3) = coeff.z;
-            matA.at<float>(i, 4) = coeff.x;
-            matA.at<float>(i, 5) = coeff.y;
+            matA.at<float>(i, 3) = coeff.z;  // 平移的导数等于雅可比矩阵
+            matA.at<float>(i, 4) = coeff.x; 
+            matA.at<float>(i, 5) = coeff.y; 
             // 点到直线距离、平面距离，作为观测值
             matB.at<float>(i, 0) = -coeff.intensity;
         }
         // 构成JTJ以及-JTe矩阵
         cv::transpose(matA, matAt);
-        matAtA = matAt * matA;
-        matAtB = matAt * matB;
+        matAtA = matAt * matA; // JTJ
+        matAtB = matAt * matB; // -JTe
         // 求解增量；J^T·J·delta_x = -J^T·f 高斯牛顿
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
  

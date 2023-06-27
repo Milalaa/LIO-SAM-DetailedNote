@@ -221,9 +221,9 @@ public:
         pubKeyPoses                 = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/mapping/trajectory", 1);
         // 发布局部关键帧map的特征点云
         pubLaserCloudSurround       = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/mapping/map_global", 1);
-        // 发布激光里程计，rviz中表现为坐标轴
+        // 发布激光里程计，imuPreintegration.cpp ,rviz中表现为坐标轴
         pubLaserOdometryGlobal      = nh.advertise<nav_msgs::Odometry> ("lio_sam/mapping/odometry", 1);
-        // 发布激光里程计，它与上面的激光里程计基本一样，只是roll、pitch用imu数据加权平均了一下，z做了限制
+        // 发布激光里程计，它与上面的激光里程计基本一样，只是roll、pitch用imu数据加权平均了一下，z做了限制 imuPreintegration.cpp 
         pubLaserOdometryIncremental = nh.advertise<nav_msgs::Odometry> ("lio_sam/mapping/odometry_incremental", 1);
         // 发布激光里程计路径，rviz中表现为载体的运行轨迹
         pubPath                     = nh.advertise<nav_msgs::Path>("lio_sam/mapping/path", 1);

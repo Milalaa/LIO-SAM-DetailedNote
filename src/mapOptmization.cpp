@@ -613,7 +613,7 @@ public:
         // 如果没有订阅者就不发布，节省系统负载
         if (pubLaserCloudSurround.getNumSubscribers() == 0)
             return;
-        // 没有关键帧自然也没有全局地图了
+        // 没有关键帧自然也没有全局地图了，cloudKeyPose3D：xyz
         if (cloudKeyPoses3D->points.empty() == true)
             return;
 
@@ -623,15 +623,16 @@ public:
         pcl::PointCloud<PointType>::Ptr globalMapKeyFrames(new pcl::PointCloud<PointType>());
         pcl::PointCloud<PointType>::Ptr globalMapKeyFramesDS(new pcl::PointCloud<PointType>());
 
-        // kdtree查找最近一帧关键帧相邻的关键帧集合
+        // 1.kdtree查找最近一帧关键帧相邻的关键帧集合
         std::vector<int> pointSearchIndGlobalMap;
         std::vector<float> pointSearchSqDisGlobalMap;
         mtx.lock();
         kdtreeGlobalMap->setInputCloud(cloudKeyPoses3D);    // 把所有关键帧送入kdtree
-        kdtreeGlobalMap->radiusSearch(cloudKeyPoses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);  // 寻找自信关键帧一定范围内的其他关键帧
+        kdtreeGlobalMap->radiusSearch(cloudKeyPoses3D->back(), globalMapVisualizationSearchRadius, pointSearchIndGlobalMap, pointSearchSqDisGlobalMap, 0);  // 寻找最近关键帧一定范围内的其他关键帧
         mtx.unlock();
 
-        for (int i = 0; i < (int)pointSearchIndGlobalMap.size(); ++i)   // 把这些找到的关键帧的位姿保存起来
+        // 2.把这些找到的关键帧的位姿保存到globalMapKeyPoses中
+        for (int i = 0; i < (int)pointSearchIndGlobalMap.size(); ++i)   
             globalMapKeyPoses->push_back(cloudKeyPoses3D->points[pointSearchIndGlobalMap[i]]);
         // 降采样
         pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyPoses;
@@ -639,7 +640,7 @@ public:
         downSizeFilterGlobalMapKeyPoses.setInputCloud(globalMapKeyPoses);
         downSizeFilterGlobalMapKeyPoses.filter(*globalMapKeyPosesDS);
 
-        // 提取局部相邻关键帧对应的特征点云
+        // 3.提取局部相邻关键帧对应的特征点云
         for (int i = 0; i < (int)globalMapKeyPosesDS->size(); ++i){
             // 距离过大
             if (pointDistance(globalMapKeyPosesDS->points[i], cloudKeyPoses3D->back()) > globalMapVisualizationSearchRadius)
@@ -655,7 +656,8 @@ public:
         downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
         downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
         downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
-        // 最终发布出去
+        
+        // 4.最终发布出去
         publishCloud(&pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
     }
 
